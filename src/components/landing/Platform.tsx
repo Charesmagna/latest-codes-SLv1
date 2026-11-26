@@ -1,0 +1,297 @@
+// @ts-nocheck
+import React, { useState, useRef } from 'react';
+import { ASSETS, ACTION_VIDEOS, vid, vidPoster } from '../../utils/cloudinary';
+import { R2_MEDIA } from '../../utils/r2Assets';
+
+
+import './Home.css';
+
+interface Props { onLogin: () => void; onRegisterUser: () => void; onRegisterOrg: () => void; navigate?: (p: string) => void; }
+
+export function Platform({ onLogin, onRegisterUser, onRegisterOrg }: Props) {
+  const [showVideoModal, setShowVideoModal] = useState(false);
+  const [videoSrc, setVideoSrc] = useState('');
+  const [activePanel, setActivePanel] = useState<number | null>(1);
+  const [platformRotation, setPlatformRotation] = useState(0);
+  const tourIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  React.useEffect(() => {
+    const timer = setInterval(() => setPlatformRotation(r => r + 1), 7000);
+    return () => clearInterval(timer);
+  }, []);
+
+  const blueprintPool = [
+    { src: R2_MEDIA.architecture.responseArchitecture, title: 'R2 BLUEPRINT: EMERGENCY RESPONSE ARCHITECTURE' },
+    { src: R2_MEDIA.architecture.systemAnatomy, title: 'R2 SCHEMATIC: SYSTEM ANATOMY & RELAY MATRIX' },
+    { src: R2_MEDIA.architecture.responseOverview, title: 'R2 OVERVIEW: PLATFORM TOPOLOGY & GUARD DISPATCH' },
+    { src: R2_MEDIA.architecture.meshPlatformOverview, title: 'R2 ARCHITECTURE: DECENTRALIZED MESH RELAY' },
+    { src: R2_MEDIA.architecture.universalResilience, title: 'R2 MATRIX: UNIVERSAL RESILIENCE BENCHMARK' }
+  ];
+
+  const telemetryPool = [
+    { src: R2_MEDIA.platform.commandDeckDark, title: 'TACTICAL COMMAND TELEMETRY DECK' },
+    { src: R2_MEDIA.platform.networkGrid, title: 'SPATIAL NETWORK & TRIANGULATION' },
+    { src: R2_MEDIA.platform.dispatchControl, title: 'CENTRAL INCIDENT CONTROL ROOM' },
+    { src: R2_MEDIA.platform.telemetryDesk, title: 'REAL-TIME DISPATCH TELEMETRY DESK' },
+    { src: R2_MEDIA.platform.mobileTelemetry, title: 'FIELD OPERATOR MOBILE TELEMETRY' }
+  ];
+
+  const activeBlueprint = blueprintPool[platformRotation % blueprintPool.length];
+  const activeTelemetry = telemetryPool[platformRotation % telemetryPool.length];
+
+  const stopTour = () => { if (tourIntervalRef.current) { clearInterval(tourIntervalRef.current); tourIntervalRef.current = null; } };
+  const openPanel = (n: number) => { setActivePanel(n); stopTour(); };
+  const closePanel = () => { setActivePanel(null); stopTour(); };
+  const startTour = () => { stopTour(); let n = 1; tourIntervalRef.current = setInterval(() => { n = n >= 4 ? 1 : n + 1; setActivePanel(n); }, 3000); };
+
+  return (
+    <div style={{ background:'#070a0f', color:'#f0f4f8', fontFamily:"'Inter',system-ui,sans-serif", minHeight:'100vh' }}>
+
+      {showVideoModal && (
+        <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,.92)', zIndex:999999, display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center' }}>
+          <button onClick={() => { setShowVideoModal(false); setVideoSrc(''); }} style={{ position:'absolute', top:'20px', right:'20px', background:'transparent', border:'none', color:'white', fontSize:'28px', cursor:'pointer' }}>✕</button>
+          <video src={videoSrc} controls autoPlay style={{ width:'90%', maxWidth:'1000px', borderRadius:'12px' }} />
+        </div>
+      )}
+
+      {/* ── HEADER WITH LIVE VISUAL ACTION VIDEO & UNIVERSAL SAFETYLINK LOGO ── */}
+      <section style={{ position:'relative', padding:'80px 40px 64px', background:'linear-gradient(135deg, #070a0f 0%, #0f172a 100%)', borderBottom:'1px solid rgba(255,255,255,.07)', overflow:'hidden' }}>
+        <video
+          src={vid(ACTION_VIDEOS.liveActionShowcase)}
+          poster={vidPoster(ACTION_VIDEOS.liveActionShowcase)}
+          autoPlay
+          muted
+          loop
+          playsInline
+          preload="metadata"
+          style={{ position:'absolute', inset:0, width:'100%', height:'100%', objectFit:'cover', opacity:0.32, pointerEvents:'none' }}
+        />
+        <div style={{ position:'absolute', inset:0, background:'linear-gradient(105deg, rgba(7,10,15,0.94) 0%, rgba(7,10,15,0.75) 55%, rgba(7,10,15,0.45) 100%)', pointerEvents:'none' }} />
+        <div style={{ position:'relative', zIndex:1, maxWidth:'1160px', margin:'0 auto' }}>
+          <div style={{ display:'flex', alignItems:'center', gap:'12px', marginBottom:'18px' }}>
+            <img src={ASSETS.logo} alt="SafetyLink Logo" style={{ height:'38px', width:'auto', objectFit:'contain' }} />
+            <span style={{ fontFamily:"'JetBrains Mono',monospace", fontSize:'11px', letterSpacing:'.18em', color:'#10b981', fontWeight:700 }}>HOW IT WORKS · LIVE ENGINE</span>
+          </div>
+          <h1 style={{ fontSize:'clamp(36px,6vw,72px)', fontWeight:900, letterSpacing:'-.04em', lineHeight:.92, marginBottom:'20px' }}>
+            11-Layer Autonomous<br/><span style={{ color:'#10b981', fontStyle:'italic' }}>Emergency Ecosystem.</span>
+          </h1>
+          <p style={{ fontSize:'15px', color:'#cbd5e1', maxWidth:'560px', lineHeight:1.7 }}>
+            Offline, on purpose. SafetyLink is engineered to survive load-shedding, zero-data scenarios, and network failures — combining BLE hardware, AI voice dispatch, and multi-tenant command dashboards into a single POPIA-compliant infrastructure.
+          </p>
+        </div>
+      </section>
+
+      {/* ── OFFLINE ARCHITECTURE ── */}
+      <section style={{ padding:'80px 40px', background:'rgba(13,17,23,0.3)', backdropFilter:'blur(8px)', borderBottom:'1px solid rgba(255,255,255,.07)' }}>
+        <div style={{ maxWidth:'1160px', margin:'0 auto' }}>
+          <div style={{ fontFamily:"'JetBrains Mono',monospace", fontSize:'10px', letterSpacing:'.18em', color:'#e8321e', marginBottom:'16px' }}>// THE OPERATING PHILOSOPHY</div>
+          <h2 style={{ fontSize:'clamp(28px,4vw,48px)', fontWeight:900, marginBottom:'48px' }}>Offline, On Purpose.</h2>
+          <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:'1px', background:'rgba(255,255,255,.07)', borderRadius:'14px', overflow:'hidden' }}>
+            {[
+              { icon:'📡', title:'Zero-Data Readiness', desc:'USSD *120# and "Please Call Me" fallbacks trigger alerts with R0 airtime and 0MB data. No internet required.' },
+              { icon:'🔗', title:'Encrypted Local Mesh', desc:'When towers go down during load-shedding, SafetyLink devices relay alerts peer-to-peer over BLE until a signal is found.' },
+              { icon:'🔐', title:'Immutable Evidence', desc:'Incident data and audio recordings write to local AES-256-GCM encrypted storage before cloud broadcast — nothing is lost offline.' },
+            ].map((f, i) => (
+              <div key={i} style={{ background:'rgba(17,24,32,0.45)', backdropFilter:'blur(6px)', padding:'32px' }}>
+                <div style={{ fontSize:'2rem', marginBottom:'16px' }}>{f.icon}</div>
+                <div style={{ fontSize:'16px', fontWeight:800, marginBottom:'8px', textTransform:'uppercase', letterSpacing:'.02em' }}>{f.title}</div>
+                <div style={{ fontSize:'13px', color:'#8892a4', lineHeight:1.6 }}>{f.desc}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      {/* ── CLICK SEQUENCE ENGINE ── */}
+      <section style={{ padding:'80px 40px', background:'rgba(7,10,15,0.25)', backdropFilter:'blur(8px)', borderBottom:'1px solid rgba(255,255,255,.07)' }}>
+        <div style={{ maxWidth:'1160px', margin:'0 auto' }}>
+          <div style={{ fontFamily:"'JetBrains Mono',monospace", fontSize:'10px', letterSpacing:'.18em', color:'#e8321e', marginBottom:'16px' }}>// ZERO FALSE ALARMS</div>
+          <h2 style={{ fontSize:'clamp(28px,4vw,48px)', fontWeight:900, marginBottom:'16px' }}>The 1-2-3 Click Sequence Engine.</h2>
+          <p style={{ color:'#8892a4', marginBottom:'48px', fontSize:'15px', maxWidth:'560px', lineHeight:1.7 }}>
+            Guarantees zero-fail distress escalation while eliminating accidental triggers. Every press is deliberate.
+          </p>
+          <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:'20px' }}>
+            {[
+              { label:'1 Press — Arming', color:'#f5a623', cr:'245,166,35', steps:['Crisp 120ms haptic vibration + beep','Screen turns on via FLAG_TURN_SCREEN_ON','10-second non-dismissible red overlay','SMS preparation begins in background'] },
+              { label:'2 Presses — Abort', color:'#00e676', cr:'0,230,118', steps:['Instantly cancels countdown','Clears dispatch pipeline','Dismisses red overlay','Logs cancellation locally for audit'] },
+              { label:'3 Presses — Critical Bypass', color:'#e8321e', cr:'232,50,30', steps:['Halts countdown immediately','800ms long haptic + 880Hz beep','Uncancellable — immediate dispatch','All channels fire simultaneously'] },
+            ].map((s, i) => (
+              <div key={i} style={{ background:'rgba(255,255,255,.03)', border:`1px solid rgba(${s.cr},.2)`, borderRadius:'14px', padding:'28px' }}>
+                <div style={{ fontSize:'14px', fontWeight:800, color:s.color, marginBottom:'20px', letterSpacing:'.04em', textTransform:'uppercase' }}>{s.label}</div>
+                <ul style={{ listStyle:'none', space:'12px' }}>
+                  {s.steps.map((st, j) => (
+                    <li key={j} style={{ fontSize:'12px', color:'#8892a4', marginBottom:'8px', paddingLeft:'16px', position:'relative' }}>
+                      <span style={{ position:'absolute', left:0, color:s.color }}>›</span>
+                      {st}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      {/* ── SEQUENTIAL DISPATCH ── */}
+      <section style={{ padding:'80px 40px', background:'rgba(13,17,23,0.3)', backdropFilter:'blur(8px)', borderBottom:'1px solid rgba(255,255,255,.07)' }}>
+        <div style={{ maxWidth:'1160px', margin:'0 auto' }}>
+          <div style={{ fontFamily:"'JetBrains Mono',monospace", fontSize:'10px', letterSpacing:'.18em', color:'#e8321e', marginBottom:'16px' }}>// SEQUENTIAL DISPATCH FIRING ORDER</div>
+          <h2 style={{ fontSize:'clamp(28px,4vw,48px)', fontWeight:900, marginBottom:'48px' }}>The Zero-Fail<br/>Guarantee.</h2>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '40px' }}>
+            <div style={{ display:'flex', flexDirection:'column', gap:'1px', background:'rgba(255,255,255,.07)', borderRadius:'14px', overflow:'hidden' }}>
+            {[
+              { step:'01', title:'BLE Click / Screen SOS', desc:'Trigger initiated — 1.5 second hold fires from pocket without screen unlock.', color:'#e8321e' },
+              { step:'02', title:'Encrypted Local Storage Write', desc:'Incident data secured even if offline — AES-256-GCM with PBKDF2 derivation.', color:'#f5a623' },
+              { step:'03', title:'CPU Wake Lock + GPS Polling', desc:'Overrides device sleep states — 10-minute PARTIAL_WAKE_LOCK tactical cycles.', color:'#0ea5e9' },
+              { step:'04', title:'Cloudflare Worker + FCM Emit', desc:'Cloud mesh broadcast — sub-100ms delivery to all registered responders.', color:'#a78bfa' },
+              { step:'05', title:'Twilio Voice + SMS + WhatsApp', desc:'Cellular bridge active — bypasses data congestion via native SMS layer.', color:'#25d366' },
+              { step:'06', title:'VAPI AI Follow-Up + Lizzy Check-In', desc:'AI agent calls all contacts in sequence. Lizzy wellness check at 45s post-dispatch.', color:'#00e676' },
+            ].map((s, i) => (
+              <div key={i} style={{ background:'rgba(17,24,32,0.45)', backdropFilter:'blur(6px)', padding:'20px 28px', display:'flex', alignItems:'center', gap:'24px' }}>
+                <span style={{ fontFamily:"'JetBrains Mono',monospace", fontSize:'11px', color:s.color, fontWeight:700, flexShrink:0, width:'24px' }}>{s.step}</span>
+                <div style={{ flex:1 }}>
+                  <div style={{ fontSize:'14px', fontWeight:700, marginBottom:'4px' }}>{s.title}</div>
+                  <div style={{ fontSize:'12px', color:'#8892a4' }}>{s.desc}</div>
+                </div>
+                <span style={{ width:'8px', height:'8px', borderRadius:'50%', background:s.color, flexShrink:0, boxShadow:`0 0 8px ${s.color}` }}/>
+              </div>
+            ))}
+          </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+              <div style={{ position: 'relative', borderRadius: '14px', overflow: 'hidden', border: '1px solid rgba(0,230,118,0.25)' }}>
+                <img 
+                  src={activeBlueprint.src} 
+                  alt={activeBlueprint.title} 
+                  onError={(e) => {
+                    e.currentTarget.onerror = null;
+                    e.currentTarget.src = '/Polish_20260907_043403519.jpg';
+                  }}
+                  style={{ width: '100%', height: 'auto', display: 'block', background: '#020617', transition: 'all 0.6s ease' }} 
+                />
+                <div style={{ position: 'absolute', bottom: 0, left: 0, right: 0, background: 'linear-gradient(to top, rgba(0,0,0,0.85) 0%, transparent 100%)', padding: '12px 16px' }}>
+                  <span style={{ fontSize: '11px', color: '#00e676', fontFamily: "'JetBrains Mono',monospace", fontWeight: 700 }}>{activeBlueprint.title}</span>
+                </div>
+              </div>
+              <div style={{ position: 'relative', borderRadius: '14px', overflow: 'hidden', border: '1px solid rgba(255,255,255,0.08)' }}>
+                <img 
+                  src={activeTelemetry.src} 
+                  alt={activeTelemetry.title} 
+                  onError={(e) => {
+                    e.currentTarget.onerror = null;
+                    e.currentTarget.src = '/Polish_20260907_043403519.jpg';
+                  }}
+                  style={{ width: '100%', height: 'auto', display: 'block', background: '#020617', transition: 'all 0.6s ease' }} 
+                />
+                <div style={{ position: 'absolute', bottom: 0, left: 0, right: 0, background: 'linear-gradient(to top, rgba(0,0,0,0.85) 0%, transparent 100%)', padding: '12px 16px' }}>
+                  <span style={{ fontSize: '11px', color: '#94a3b8', fontFamily: "'JetBrains Mono',monospace", fontWeight: 700 }}>{activeTelemetry.title}</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+      
+      {/* ── GHOST ENGINE ── */}
+      <section style={{ padding:'80px 40px', background:'rgba(7,10,15,0.25)', backdropFilter:'blur(8px)', borderBottom:'1px solid rgba(255,255,255,.07)' }}>
+        <div style={{ maxWidth:'1160px', margin:'0 auto' }}>
+          <div style={{ fontFamily:"'JetBrains Mono',monospace", fontSize:'10px', letterSpacing:'.18em', color:'#e8321e', marginBottom:'16px' }}>// NATIVE SURVIVAL</div>
+          <h2 style={{ fontSize:'clamp(28px,4vw,48px)', fontWeight:900, marginBottom:'16px' }}>The Ghost Engine.</h2>
+          <p style={{ color:'#8892a4', marginBottom:'48px', fontSize:'15px', maxWidth:'560px', lineHeight:1.7 }}>
+            SafetyLink is "Recents Swipe Immune." Our architecture overrides onTaskRemoved() and restarts PanicService.java within 2 seconds of being closed. We don't wait — we ensure the listener is immortal.
+          </p>
+          <div style={{ display:'grid', gridTemplateColumns:'repeat(2,1fr)', gap:'20px' }}>
+            {[
+              { title:'Persistence', desc:'Binds to ACTION_BOOT_COMPLETED — service auto-recovers instantly upon device restart. Samsung and Xiaomi killer bypassed via SafetyKeepAliveWorker.' },
+              { title:'16KB Page Alignment', desc:'Fully compliant with Android 15 (API 35) standards for high-performance memory management. Zero compromise on modern hardware.' },
+              { title:'Zero-Config BLE', desc:'Vendor-agnostic pairing that binds to any BLE keyfob by listening for the first characteristic to fire — massive logistical flexibility for any iTag variant.' },
+              { title:'Lock-Screen Dominance', desc:'Uses TYPE_APPLICATION_OVERLAY to draw the 10-second disarm countdown over the lock-screen — removing PIN friction during a real crisis.' },
+            ].map((f, i) => (
+              <div key={i} style={{ background:'rgba(232,50,30,.05)', border:'1px solid rgba(232,50,30,.15)', borderRadius:'14px', padding:'28px' }}>
+                <div style={{ fontSize:'14px', fontWeight:800, color:'#e8321e', marginBottom:'10px', textTransform:'uppercase', letterSpacing:'.04em' }}>{f.title}</div>
+                <div style={{ fontSize:'13px', color:'#8892a4', lineHeight:1.6 }}>{f.desc}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      {/* ── LIVE FIELD ACTION VIDEO REELS ── */}
+      <section style={{ padding:'72px 40px', background:'#0b1325', borderBottom:'1px solid rgba(255,255,255,.07)' }}>
+        <div style={{ maxWidth:'1160px', margin:'0 auto' }}>
+          <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', flexWrap:'wrap', gap:'12px', marginBottom:'32px' }}>
+            <div>
+              <div style={{ fontFamily:"'JetBrains Mono',monospace", fontSize:'10px', letterSpacing:'.18em', color:'#10b981', marginBottom:'10px', fontWeight:700 }}>LIVE FIELD DEMONSTRATIONS</div>
+              <h2 style={{ fontSize:'clamp(24px,4vw,42px)', fontWeight:900, margin:0 }}>Watch the Platform Respond.</h2>
+            </div>
+            <img src={ASSETS.logo} alt="SafetyLink Logo" style={{ height:'34px', width:'auto', objectFit:'contain' }} />
+          </div>
+          <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(300px, 1fr))', gap:'20px' }}>
+            {[
+              { id: ACTION_VIDEOS.bleItagAction, tag: 'BLE KEYFOB', title: 'Pocket BLE iTAG Trigger', desc: 'Instant emergency activation from your pocket without unlocking your phone.' },
+              { id: ACTION_VIDEOS.droneDispatch, tag: 'AERIAL PURSUIT', title: 'Autonomous Drone Dispatch', desc: 'Live GPS pin guides aerial eyes-on-scene directly to active distress coordinates.' },
+              { id: ACTION_VIDEOS.neighbourhoodWatch, tag: 'COMMUNITY MESH', title: 'Neighbourhood Watch Sync', desc: 'Simultaneous responder routing across estate guards and community patrol vehicles.' },
+            ].map((item) => (
+              <div key={item.id} style={{ borderRadius:'16px', overflow:'hidden', background:'#0f172a', border:'1px solid rgba(255,255,255,0.1)' }}>
+                <div style={{ position:'relative', height:'205px', background:'#000' }}>
+                  <video
+                    src={vid(item.id)}
+                    poster={vidPoster(item.id)}
+                    controls
+                    preload="metadata"
+                    playsInline
+                    style={{ width:'100%', height:'100%', objectFit:'cover', display:'block' }}
+                  />
+                  <div style={{ pointerEvents:'none', position:'absolute', top:'10px', right:'10px', display:'flex', alignItems:'center', gap:'6px', padding:'4px 8px', borderRadius:'8px', background:'rgba(2,6,23,0.75)', border:'1px solid rgba(255,255,255,0.15)' }}>
+                    <img src={ASSETS.logo} alt="SafetyLink" style={{ height:'16px', width:'auto' }} />
+                    <span style={{ fontFamily:"'JetBrains Mono',monospace", fontSize:'9px', fontWeight:700, color:'#34d399' }}>{item.tag}</span>
+                  </div>
+                </div>
+                <div style={{ padding:'16px' }}>
+                  <div style={{ fontSize:'15px', fontWeight:800, color:'#fff' }}>{item.title}</div>
+                  <div style={{ fontSize:'12px', color:'#94a3b8', marginTop:'4px', lineHeight:1.5 }}>{item.desc}</div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      {/* ── IoT INTEGRATION ── */}
+      <section style={{ padding:'80px 40px', background:'rgba(13,17,23,0.3)', backdropFilter:'blur(8px)' }}>
+        <div style={{ maxWidth:'1160px', margin:'0 auto', marginBottom: '60px' }}>
+          <img 
+            src={ASSETS.mapDark} 
+            alt="SafetyLink Incident Heatmap" 
+            onError={(e) => {
+              e.currentTarget.onerror = null;
+              e.currentTarget.src = '/Polish_20260907_043403519.jpg';
+            }}
+            style={{ width: '100%', borderRadius: '16px', border: '1px solid rgba(255,255,255,0.1)' }} 
+          />
+        </div>
+        <div style={{ maxWidth:'1160px', margin:'0 auto' }}>
+          <div style={{ fontFamily:"'JetBrains Mono',monospace", fontSize:'10px', letterSpacing:'.18em', color:'#e8321e', marginBottom:'16px' }}>// GLOBAL COMMAND CENTER</div>
+          <h2 style={{ fontSize:'clamp(28px,4vw,48px)', fontWeight:900, marginBottom:'48px' }}>IoT Integration<br/>& Command.</h2>
+          <div style={{ display:'grid', gridTemplateColumns:'repeat(2,1fr)', gap:'20px' }}>
+            {[
+              { emoji:'📡', title:'Wearable Telemetry', desc:'Live GIS tracking, RSSI signal strength, and battery health of deployed iTags across your entire estate or campus.' },
+              { emoji:'🌡️', title:'Tuya Environmental Sensors', desc:'Real-time alerts from smart smoke detectors, gas leak monitors, and flood sensors integrated directly into the dispatch chain.' },
+              { emoji:'📷', title:'Hikvision CCTV Integration', desc:'Direct API linkage triggering pan-tilt-zoom (PTZ) cameras based on localized panic coordinates. Eyes on scene within seconds.' },
+              { emoji:'🚁', title:'Autonomous Drone-in-a-Box', desc:'Pre-programmed offline flight paths dispatching a 5G camera drone directly to incident GPS coordinates. Auto-return on mission complete.' },
+            ].map((f, i) => (
+              <div key={i} style={{ background:'rgba(255,255,255,.03)', border:'1px solid rgba(255,255,255,.07)', borderRadius:'14px', padding:'28px', display:'flex', gap:'16px' }}>
+                <span style={{ fontSize:'2rem', flexShrink:0 }}>{f.emoji}</span>
+                <div>
+                  <div style={{ fontSize:'15px', fontWeight:800, marginBottom:'8px' }}>{f.title}</div>
+                  <div style={{ fontSize:'13px', color:'#8892a4', lineHeight:1.6 }}>{f.desc}</div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      <style>{`@keyframes blink{0%,100%{opacity:1}50%{opacity:.12}}`}</style>
+    </div>
+  );
+}

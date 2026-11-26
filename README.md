@@ -1,11 +1,24 @@
-<div align="center">
+# SafetyLink Core
 
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
+SafetyLink is a unified, highly optimized **Sequential Emergency Alert Network** designed to function seamlessly under restrictive offline, hardware-constrained, or distress scenarios. 
 
-  <h1>Built with AI Studio</h2>
+This repository operates under strict architectural guidelines defined in `AGENTS.md`.
 
-  <p>The fastest path from prompt to production with Gemini.</p>
+## Features
+* **Background Worker**: Fully decoupled BullMQ dispatch engine for triggering SMS and Voice through Twilio APIs. (Runs concurrently with the web server)
+* **WebRTC Video**: High-priority real-time video feeds over ConnectyCube for active Distress situations.
+* **Supabase Integration**: Native bindings pulling configuration credentials from the existing Supabase storage without manual user proxy mapping.
 
-  <a href="https://aistudio.google.com/apps">Start building</a>
+## Setup
+All configurations for Twilio and ConnectyCube use your persistent cloud environment credentials automatically.
 
-</div>
+`npm install`
+`npm run dev` 
+
+Build Android locally:
+`npm run cap:sync`
+`cd android && ./gradlew assembleDebug`
+
+
+## Mobile Application (APK)
+* **Download Android App**: [SafetyLink.apk at www.safetylink.online 

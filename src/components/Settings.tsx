@@ -1,0 +1,2873 @@
+import React, { useState, useEffect } from 'react';
+import { useAppStore } from '../utils/store';
+import { Capacitor } from '@capacitor/core';
+import { motion } from 'motion/react';
+import { translate } from '../utils/translations';
+import { SafetyLinkLogo } from './SafetyLinkLogo';
+import { biometricService } from '../services/BiometricService';
+import { NativeDispatchService, SafetyLinkEmergency } from '../services/NativeDispatchService';
+import { resolveUssdCode, firePleaseCallMe } from '../services/pcmTrigger';
+import { syncProfile } from '../services/ProfileSync';
+import { HikvisionCameraManager } from './HikvisionCameraManager';
+import { PopiaLegalModal } from './PopiaLegalModal';
+import { QrContactLinker } from './QrContactLinker';
+import type { BleButtonAction } from '../utils/store';
+
+const BLE_ACTION_OPTIONS: { value: BleButtonAction; label: string }[] = [
+  { value: 'PANIC', label: '🚨 Emergency SOS (Countdown)' },
+  { value: 'INSTANT_PANIC', label: '⚡ Instant SOS (0s, Immediate Dispatch)' },
+  { value: 'SILENT_PANIC', label: '🔕 Silent Stealth SOS (No Siren)' },
+  { value: 'CHECK_IN_SAFE', label: '✅ Check-In Safe (Notify & Clear Timer)' },
+  { value: 'SHARE_GPS_PING', label: '📍 Share Live GPS Pin Snapshot' },
+  { value: 'SAFETY_TIMEOUT', label: '⏱️ Start Safety Walk Timer' },
+  { value: 'FIND_PHONE', label: '🔔 Find My Phone (Max-Volume Ring)' },
+  { value: 'VOICE_LIZZY', label: '🎙️ Open Kleva / Lizzy AI Live Voice' },
+  { value: 'SIREN_ONLY', label: '📢 Audible Deterrent Siren Only' },
+  { value: 'CANCEL', label: '🛡️ Cancel / Disarm Active SOS' },
+  { value: 'DISABLED', label: '⚪ Disabled (Ignore Press)' },
+];
+
+export const Settings: React.FC = () => {
+  const { 
+    auditLogs, 
+    clearAuditLogs, 
+    language, 
+    currentUser,
+    userPin,
+    duressPin,
+    updateUserProfile,
+    requestJoinOrganization,
+    organizations,
+    sosCountdownDuration,
+    setSosCountdownDuration,
+    silenceAlerts,
+    setSilenceAlerts,
+    globalTheme,
+    setGlobalTheme,
+    displaySettings,
+    setDisplaySettings,
+    decoyActive,
+    setDecoyActive,
+    decoyCode,
+    setDecoyCode,
+    decoyDistressCode,
+    setDecoyDistressCode,
+    isFloatingWidgetDeployed,
+    setFloatingWidgetDeployed,
+    floatingWidgetSize,
+    setFloatingWidgetSize,
+    showKlevaFloatingIcon,
+    setShowKlevaFloatingIcon,
+    dispatchSettings,
+    setDispatchSettings,
+    dispatchLogs,
+    clearDispatchLogs,
+    notificationPanelLogs,
+    clearNotificationPanelLogs,
+    bleButtonConfig,
+    setBleButtonConfig,
+    handleHardwareButtonPress,
+    bleDevices,
+    availableSims,
+    preferredSimId,
+    setPreferredSim,
+    loadSimCards,
+    unlockMethod,
+    setUnlockMethod
+  } = useAppStore();
+  const [showPopiaModal, setShowPopiaModal] = useState(false);
+
+  type SettingsCategory = 'DISPATCH' | 'CONTACTS' | 'HARDWARE' | 'APPEARANCE' | 'SECURITY' | 'ADVANCED';
+  const [activeSection, setActiveSection] = useState<SettingsCategory>('DISPATCH');
+  const [settingsSearch, setSettingsSearch] = useState('');
+  const [showCategoryGuide, setShowCategoryGuide] = useState(false);
+
+  const showBlock = (category: SettingsCategory, keywords: string): boolean => {
+    const q = settingsSearch.trim().toLowerCase();
+    if (!q) return activeSection === category;
+    return `${category} ${keywords}`.toLowerCase().includes(q);
+  };
+
+  const CATEGORY_META: {
+    id: SettingsCategory;
+    label: string;
+    short: string;
+    icon: string;
+    guide: string;
+  }[] = [
+    {
+      id: 'DISPATCH',
+      label: 'Emergency & Dispatch',
+      short: 'Dispatch',
+      icon: '🚨',
+      guide:
+        'Native SMS and Native Voice Call are mandatory whenever contacts are configured. Enable Zero-Airtime USSD Relay here (or on Mission Control) so offline triggers dial Please Call Me before the voice call and fire FCM + SMS from the gateway.',
+    },
+    {
+      id: 'CONTACTS',
+      label: 'Contacts & Org',
+      short: 'Contacts',
+      icon: '🔗',
+      guide:
+        'Link emergency contacts instantly via 1-Way or 2-Way QR scan, or connect your account to a Campus, Estate, or Armed Response Organization ID.',
+    },
+    {
+      id: 'HARDWARE',
+      label: 'Hardware & IoT',
+      short: 'Hardware',
+      icon: '🔘',
+      guide:
+        'Map single, double, triple, and long presses on Bluetooth iTAG panic buttons, link Hikvision/ONVIF site cameras, and configure fleet or aerial drone integrations.',
+    },
+    {
+      id: 'APPEARANCE',
+      label: 'Appearance & Alerts',
+      short: 'Display',
+      icon: '🎨',
+      guide:
+        'Switch between unified Light Mode, Deep Navy Dark Mode, or System Auto, adjust screen-fit text scaling, and tune Crime Hotspot proximity warnings and entry chimes.',
+    },
+    {
+      id: 'SECURITY',
+      label: 'Security & Survival',
+      short: 'Security',
+      icon: '🛡️',
+      guide:
+        'Manage Safe & Duress PINs, Decoy Calculator disguise, lock-screen wake permissions, battery killer exemption, Cloudflare Private DNS, and POPIA privacy rights.',
+    },
+    {
+      id: 'ADVANCED',
+      label: 'Diagnostics & System',
+      short: 'System',
+      icon: '🧪',
+      guide:
+        'Run live SMS/USSD/FCM gateway tests, inspect native dispatch and audit logs, configure personal Twilio credentials, and check for OTA SafetyLink APK updates.',
+    },
+  ];
+  const activeCategoryMeta = CATEGORY_META.find((c) => c.id === activeSection) || CATEGORY_META[0];
+  const [screenWakeLockEnabled, setScreenWakeLockEnabled] = useState<boolean>(() => {
+    try { return localStorage.getItem('sl_screen_wake_lock') !== 'false'; } catch { return true; }
+  });
+  const [filter, setFilter] = useState<'ALL' | 'SYSTEM' | 'BLE' | 'GPS' | 'DISPATCH' | 'SECURITY'>('ALL');
+
+  // Biometric gate for sensitive security settings
+  const [hasBiometrics, setHasBiometrics] = useState(false);
+  const [biometryType, setBiometryType] = useState('FINGERPRINT');
+  const [isPinSettingsUnlocked, setIsPinSettingsUnlocked] = useState(() => biometricService.isScopeUnlocked('settings'));
+  const [isAuthenticatingPin, setIsAuthenticatingPin] = useState(false);
+  const [isTestingUssd, setIsTestingUssd] = useState(false);
+  const [testClicks, setTestClicks] = useState(0);
+
+  // Live SMS / USSD / FCM Diagnostics & Test Trigger Console
+  const [liveTestPhone, setLiveTestPhone] = useState<string>(() => currentUser?.phone || '065 830 7216');
+  const [liveTestSmsOnly, setLiveTestSmsOnly] = useState<boolean>(true);
+  const [isSendingLiveTest, setIsSendingLiveTest] = useState<boolean>(false);
+  const [isSendingFcmTest, setIsSendingFcmTest] = useState<boolean>(false);
+  const [isSyncingFcm, setIsSyncingFcm] = useState<boolean>(false);
+  const [liveTestResult, setLiveTestResult] = useState<any>(null);
+  const [isCheckingHealth, setIsCheckingHealth] = useState<boolean>(false);
+  const [providerHealth, setProviderHealth] = useState<any>(null);
+
+  const getDiagnosticsBaseUrl = () =>
+    (useAppStore.getState().customBackendUrl || 'https://api.safetylink.online').replace(/\/+$/, '');
+
+  const handleCheckGatewayHealth = async () => {
+    setIsCheckingHealth(true);
+    try {
+      const base = getDiagnosticsBaseUrl();
+      const targetPhone = (liveTestPhone || currentUser?.phone || '').trim();
+      const [provRes, pcmRes, tokenStatusRes, nativeFcmRes] = await Promise.all([
+        fetch(`${base}/api/health/providers`).then(r => r.json()).catch(() => null),
+        fetch(`${base}/api/pcm/gateway`).then(r => r.json()).catch(() => null),
+        targetPhone
+          ? fetch(`${base}/api/device/token/status?phone=${encodeURIComponent(targetPhone)}`).then(r => r.json()).catch(() => null)
+          : Promise.resolve(null),
+        Capacitor.isNativePlatform()
+          ? SafetyLinkEmergency.getFcmStatus().catch(() => null)
+          : Promise.resolve(null),
+      ]);
+      setProviderHealth({
+        providers: provRes,
+        pcmGateway: pcmRes?.number || null,
+        tokenStatus: tokenStatusRes,
+        nativeFcm: nativeFcmRes,
+        checkedAt: Date.now(),
+      });
+      useAppStore.getState().addToast('Live gateway & FCM registration diagnostics refreshed.', 'success');
+    } catch (err: any) {
+      useAppStore.getState().addToast(`Health check failed: ${err?.message || err}`, 'error');
+    } finally {
+      setIsCheckingHealth(false);
+    }
+  };
+
+  const handleSyncProfileAndFcm = async () => {
+    setIsSyncingFcm(true);
+    try {
+      await syncProfile(true);
+      await handleCheckGatewayHealth();
+      useAppStore.getState().addToast('Profile, emergency contacts, and FCM device registration synced.', 'success');
+    } catch (err: any) {
+      useAppStore.getState().addToast(`Profile/FCM sync failed: ${err?.message || err}`, 'error');
+    } finally {
+      setIsSyncingFcm(false);
+    }
+  };
+
+  const handleSendRealFcmRingTest = async () => {
+    const cleanTarget = liveTestPhone.trim();
+    if (!cleanTarget) {
+      useAppStore.getState().addToast('Enter a target emergency contact phone number to ring.', 'warn');
+      return;
+    }
+    setIsSendingFcmTest(true);
+    setLiveTestResult(null);
+    try {
+      const store = useAppStore.getState();
+      const base = getDiagnosticsBaseUrl();
+      const loc = store.userLocation;
+      const res = await fetch(`${base}/api/fcm/test-ring`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          phone: cleanTarget,
+          callerName: currentUser?.fullName || 'SafetyLink FCM Ring Test',
+          callerNumber: currentUser?.phone || cleanTarget,
+          lat: loc?.lat,
+          lng: loc?.lng,
+          location: 'Real FCM Data-Only Loud Alarm Verification',
+        }),
+      });
+      const data = await res.json().catch(() => ({ ok: false, error: `HTTP ${res.status}` }));
+      const mappedResults = Array.isArray(data.results)
+        ? data.results.map((r: any, idx: number) => ({
+            channel: 'FCM_LOUD_ALARM',
+            provider: `FCM Device #${idx + 1}`,
+            to: data.phone || cleanTarget,
+            ok: Boolean(r.ok),
+            status: r.status || (r.error ? String(r.error) : ''),
+          }))
+        : [];
+      setLiveTestResult({
+        httpStatus: res.status,
+        ok: Boolean(data.ok),
+        message: data.ok
+          ? `Real HIGH-priority data-only FCM alarm accepted by Firebase for ${data.registeredDevices || 1} device(s) on ${data.phone || cleanTarget}.`
+          : data.error || 'FCM test ring failed',
+        error: data.ok ? undefined : data.error,
+        results: mappedResults,
+        sentAt: Date.now(),
+      });
+      store.addAuditLog(
+        'DISPATCH',
+        data.ok ? 'INFO' : 'WARN',
+        `Real FCM Ring Test -> ${cleanTarget}`,
+        `HTTP ${res.status} • Devices: ${data.registeredDevices ?? 0}`
+      );
+      store.addToast(
+        data.ok
+          ? `Real FCM loud alarm sent to ${data.phone || cleanTarget}!`
+          : (data.error || `FCM test returned HTTP ${res.status}`),
+        data.ok ? 'success' : 'warn'
+      );
+    } catch (err: any) {
+      setLiveTestResult({ ok: false, error: err?.message || String(err), sentAt: Date.now() });
+      useAppStore.getState().addToast(`Real FCM test failed: ${err?.message || err}`, 'error');
+    } finally {
+      setIsSendingFcmTest(false);
+    }
+  };
+
+  const handleSendLiveTestTrigger = async () => {
+    const cleanTarget = liveTestPhone.trim();
+    if (!cleanTarget) {
+      useAppStore.getState().addToast('Enter a target phone number to test.', 'warn');
+      return;
+    }
+    setIsSendingLiveTest(true);
+    setLiveTestResult(null);
+    try {
+      const store = useAppStore.getState();
+      const base = getDiagnosticsBaseUrl();
+      const loc = store.userLocation;
+      const payload = {
+        callerName: currentUser?.fullName || 'SafetyLink Diagnostic Test',
+        callerNumber: cleanTarget,
+        lat: loc?.lat,
+        lng: loc?.lng,
+        description: 'SafetyLink Settings Live SMS/FCM Trigger Diagnostic Test',
+        emergencyContacts: [{ name: 'Live Diagnostic Target', phone: cleanTarget }],
+        skipVoiceTo: liveTestSmsOnly ? [cleanTarget, '+27739441222'] : [],
+      };
+      const res = await fetch(`${base}/api/panic`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json().catch(() => ({ ok: false, error: `HTTP ${res.status}` }));
+      setLiveTestResult({ httpStatus: res.status, ...data, sentAt: Date.now() });
+      store.addAuditLog('DISPATCH', data.ok ? 'INFO' : 'WARN', `Live Test Trigger -> ${cleanTarget}`, `HTTP ${res.status} • Channels: ${(data.results || []).length}`);
+      store.addToast(
+        data.ok
+          ? `Live test alert dispatched to ${cleanTarget}!`
+          : `Test returned HTTP ${res.status}. Inspect channel results below.`,
+        data.ok ? 'success' : 'warn'
+      );
+    } catch (err: any) {
+      setLiveTestResult({ ok: false, error: err?.message || String(err), sentAt: Date.now() });
+      useAppStore.getState().addToast(`Live test failed: ${err?.message || err}`, 'error');
+    } finally {
+      setIsSendingLiveTest(false);
+    }
+  };
+
+  useEffect(() => {
+    loadSimCards();
+  }, [loadSimCards]);
+
+  useEffect(() => {
+    let active = true;
+    biometricService.checkAvailability().then(res => {
+      if (active) {
+        setHasBiometrics(res.isAvailable);
+        setBiometryType(res.biometryType);
+      }
+    });
+    return () => { active = false; };
+  }, []);
+  const [showHikvisionManager, setShowHikvisionManager] = useState(false);
+
+  const handleUnlockPinSettings = async () => {
+    setIsAuthenticatingPin(true);
+    try {
+      const ok = await biometricService.authenticate({
+        title: 'Security PIN Authentication',
+        subtitle: 'Biometric Security Gate',
+        description: 'Verify your fingerprint or face to view and modify your emergency PINs.',
+        negativeButtonText: 'Cancel'
+      });
+      if (ok) {
+        setIsPinSettingsUnlocked(true);
+        biometricService.grantScopeUnlock('settings');
+        useAppStore.getState().addToast('Biometrics verified. Security PIN settings unlocked.', 'success');
+      } else {
+        useAppStore.getState().addToast('Biometric authentication required to modify security PINs.', 'warn');
+      }
+    } finally {
+      setIsAuthenticatingPin(false);
+    }
+  };
+
+  // Profile forms state
+
+  
+  const [isCheckingUpdate, setIsCheckingUpdate] = useState(false);
+  const handleCheckForUpdates = async () => {
+    setIsCheckingUpdate(true);
+    try {
+      await useAppStore.getState().checkAppUpdates();
+      const { updateInfo } = useAppStore.getState();
+      if (updateInfo && updateInfo.available) {
+        useAppStore.getState().addToast(`Version ${updateInfo.version} found! Downloading...`, "success");
+        // For Capacitor/Android
+        if (Capacitor.getPlatform() === 'android' && updateInfo.apkUrl) {
+          window.open(updateInfo.apkUrl, '_blank');
+        } else if (updateInfo.exeUrl && Capacitor.getPlatform() !== 'android') {
+           // Desktop Web/Electron
+           window.open(updateInfo.exeUrl, '_blank');
+        } else {
+           window.open('https://safetylink-api.tshilidzi-mukwevho54.workers.dev/download/safetylink.apk', '_blank');
+        }
+      } else {
+        useAppStore.getState().addToast("You are already on the latest version.", "info");
+      }
+    } catch (e) {
+      useAppStore.getState().addToast("Failed to check for updates.", "error");
+    } finally {
+      setIsCheckingUpdate(false);
+    }
+  };
+
+  
+  
+
+
+
+  const [orgIdInput, setOrgIdInput] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [selectedJoinRole, setSelectedJoinRole] = useState('Community Member');
+
+  const t = (key: string) => translate(language, key);
+
+
+  const filteredLogs = auditLogs.filter(log => {
+    if (filter === 'ALL') return true;
+    return log.category === filter;
+  });
+
+  return (
+    <motion.div 
+      initial={{ opacity: 0, y: 15 }}
+      animate={{ opacity: 1, y: 0 }}
+      className="glass-panel rounded-3xl p-5 shadow-2xl w-full max-w-md mx-auto relative overflow-hidden scanlines"
+    >
+      <div className="absolute top-0 left-0 right-0 h-[3px] bg-gradient-to-r from-purple-500 via-pink-400 to-purple-500 neon-glow-blue" />
+      <div className="absolute inset-0 digital-grid opacity-10 pointer-events-none" />
+      <div className="flex justify-center mb-6 mt-2 relative z-10">
+        <img 
+          src="/logos/Safety_Link_Logo_Transparent.png" 
+          alt="SafetyLink Official Logo" 
+          className="h-14 object-contain drop-shadow-xl" 
+          onError={(e) => {
+            (e.currentTarget as HTMLImageElement).src = '/logos/New SafetyLink Official Logo.svg';
+          }}
+        />
+      </div>
+
+      <div className="border-b border-slate-900 pb-3.5 text-left relative z-10 flex items-center gap-2">
+        <SafetyLinkLogo size={18} glowColor="rgba(168, 85, 247, 0.4)" />
+        <div>
+          <h3 className="text-xs font-black text-slate-100 tracking-[0.2em] font-display uppercase">
+            {t('settings.title')}
+          </h3>
+          <p className="text-[10px] font-mono text-slate-500 mt-0.5">
+            {t('settings.subtitle')}
+          </p>
+        </div>
+      </div>
+
+      {/* Universal 6-Category Searchable Settings Navigation */}
+      <div className="mt-3 space-y-3 relative z-10">
+        {/* Instant Search Input */}
+        <div className="relative">
+          <input
+            type="text"
+            value={settingsSearch}
+            onChange={(e) => setSettingsSearch(e.target.value)}
+            placeholder="Search any setting (e.g. countdown, USSD, QR, PIN, theme, BLE, SIM, Twilio)..."
+            data-testid="settings-search-input"
+            className="w-full px-3.5 py-2.5 pr-9 rounded-xl text-xs bg-white dark:bg-[#071124] border border-slate-300 dark:border-slate-800 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:border-emerald-500 transition-colors"
+          />
+          {settingsSearch && (
+            <button
+              type="button"
+              onClick={() => setSettingsSearch('')}
+              className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[10px] font-bold px-1.5 py-0.5 rounded bg-slate-200 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white"
+            >
+              ✕
+            </button>
+          )}
+        </div>
+
+        {/* 6 Clean Category Tabs */}
+        <div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5" role="tablist" aria-label="Settings Categories">
+          {CATEGORY_META.map((sec) => {
+            const isSelected = !settingsSearch.trim() && activeSection === sec.id;
+            return (
+              <button
+                key={sec.id}
+                type="button"
+                role="tab"
+                aria-selected={isSelected}
+                data-testid={`settings-tab-${sec.id.toLowerCase()}`}
+                onClick={() => {
+                  setSettingsSearch('');
+                  setActiveSection(sec.id);
+                  setShowCategoryGuide(false);
+                }}
+                className={`flex items-center gap-2 px-3 py-2 rounded-xl text-[11px] font-bold border text-left transition-all ${
+                  isSelected
+                    ? 'bg-emerald-600 border-emerald-500 text-white shadow-sm'
+                    : 'bg-white dark:bg-slate-950/70 border-slate-200 dark:border-slate-800 text-slate-700 dark:text-slate-300 hover:border-emerald-500/50'
+                }`}
+              >
+                <span className="text-sm leading-none">{sec.icon}</span>
+                <span className="truncate">{sec.label}</span>
+              </button>
+            );
+          })}
+        </div>
+
+        {/* Collapsible Category Guide (reduces clutter while keeping complete guidance 1 tap away) */}
+        {!settingsSearch.trim() ? (
+          <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-[#071124]/80 px-3 py-2 text-left">
+            <button
+              type="button"
+              onClick={() => setShowCategoryGuide((v) => !v)}
+              className="w-full flex items-center justify-between gap-2 text-[11px] font-semibold text-slate-700 dark:text-slate-300"
+            >
+              <span className="flex items-center gap-1.5">
+                <span>{activeCategoryMeta.icon}</span>
+                <span>{activeCategoryMeta.label} Guide</span>
+              </span>
+              <span className="text-[10px] font-mono text-emerald-600 dark:text-emerald-400">
+                {showCategoryGuide ? 'Hide ▲' : 'How it works ▼'}
+              </span>
+            </button>
+            {showCategoryGuide && (
+              <p className="text-[11px] text-slate-600 dark:text-slate-400 mt-2 leading-relaxed border-t border-slate-200 dark:border-slate-800 pt-2">
+                {activeCategoryMeta.guide}
+              </p>
+            )}
+          </div>
+        ) : (
+          <div className="flex items-center justify-between px-3 py-2 rounded-xl bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-800/60 text-[11px] text-emerald-800 dark:text-emerald-300">
+            <span>Showing all settings matching &ldquo;<strong>{settingsSearch}</strong>&rdquo;</span>
+            <button
+              type="button"
+              onClick={() => setSettingsSearch('')}
+              className="font-bold underline ml-2"
+            >
+              Clear
+            </button>
+          </div>
+        )}
+      </div>
+
+      {/* App Preferences: Display, Theme & Crime Hotspot Proximity Alerts */}
+      {showBlock('APPEARANCE', 'display theme light dark navy auto screen fit density text scale high contrast reduced motion crime hotspot proximity alerts chime sound') && (
+      <div className="space-y-3 text-left mt-4 relative z-10">
+        <div className="flex items-center justify-between">
+          <h4 className="text-[11px] font-bold text-slate-600 dark:text-slate-400 tracking-wide">
+            Display, Theme &amp; Screen-Fit Accessibility
+          </h4>
+          <span className="text-[10px] font-mono text-slate-500 tabular-nums">
+            {typeof window !== 'undefined' ? `${window.innerWidth}×${window.innerHeight}px` : 'Auto'}
+          </span>
+        </div>
+
+        <div className="bg-white dark:bg-[#0d1b34] border border-slate-200 dark:border-slate-800 rounded-2xl p-4 space-y-4 shadow-sm">
+          {/* Theme Mode (Light Collage / Deep Navy Dark / System Auto) */}
+          <div className="space-y-1.5">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-bold text-slate-900 dark:text-slate-100">Platform Theme</span>
+              <span className="text-[11px] text-slate-500 dark:text-slate-400">Synced across APK, EXE &amp; Web</span>
+            </div>
+            <div className="grid grid-cols-3 gap-1.5 p-1 rounded-xl bg-slate-100 dark:bg-[#071124]">
+              {([
+                { id: 'light', label: 'Light' },
+                { id: 'dark', label: 'Deep Navy' },
+                { id: 'system', label: 'Auto' },
+              ] as const).map((opt) => (
+                <button
+                  key={opt.id}
+                  type="button"
+                  onClick={() => setDisplaySettings({ themeMode: opt.id })}
+                  className={`py-2 text-xs font-semibold rounded-lg transition-colors ${
+                    displaySettings.themeMode === opt.id
+                      ? 'bg-emerald-600 text-white shadow-sm'
+                      : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                  }`}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Screen Fit & Auto-Detection */}
+          <div className="space-y-1.5 pt-3 border-t border-slate-200 dark:border-slate-800">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-bold text-slate-900 dark:text-slate-100">Screen Fit &amp; Density</span>
+              <span className="text-[11px] text-emerald-600 dark:text-emerald-400 font-medium">Prevents phone cropping</span>
+            </div>
+            <div className="grid grid-cols-4 gap-1.5 p-1 rounded-xl bg-slate-100 dark:bg-[#071124]">
+              {([
+                { id: 'auto', label: 'Auto-Fit' },
+                { id: 'compact', label: 'Compact' },
+                { id: 'standard', label: 'Standard' },
+                { id: 'spacious', label: 'Spacious' },
+              ] as const).map((opt) => (
+                <button
+                  key={opt.id}
+                  type="button"
+                  onClick={() => setDisplaySettings({ screenFit: opt.id })}
+                  className={`py-2 text-[11px] font-semibold rounded-lg transition-colors whitespace-nowrap ${
+                    displaySettings.screenFit === opt.id
+                      ? 'bg-emerald-600 text-white shadow-sm'
+                      : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                  }`}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Text Scale */}
+          <div className="space-y-1.5 pt-3 border-t border-slate-200 dark:border-slate-800">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-bold text-slate-900 dark:text-slate-100">Text Size Scale</span>
+              <span className="text-[11px] text-slate-500 dark:text-slate-400 tabular-nums">{Math.round(displaySettings.textScale * 100)}%</span>
+            </div>
+            <div className="grid grid-cols-4 gap-1.5 p-1 rounded-xl bg-slate-100 dark:bg-[#071124]">
+              {([
+                { v: 0.9, label: 'Small (90%)' },
+                { v: 1, label: 'Default' },
+                { v: 1.12, label: 'Large' },
+                { v: 1.25, label: 'XL (125%)' },
+              ] as const).map((opt) => (
+                <button
+                  key={opt.v}
+                  type="button"
+                  onClick={() => setDisplaySettings({ textScale: opt.v })}
+                  className={`py-2 text-[11px] font-semibold rounded-lg transition-colors whitespace-nowrap ${
+                    displaySettings.textScale === opt.v
+                      ? 'bg-emerald-600 text-white shadow-sm'
+                      : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                  }`}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Accessibility & Safety Feed Proximity Advisory Toggles */}
+          <div className="space-y-2.5 pt-3 border-t border-slate-200 dark:border-slate-800">
+            {([
+              {
+                key: 'oneHandedReach',
+                title: 'One-Handed Panic Reach',
+                desc: 'Positions the SOS trigger lower in the thumb zone for tall screens',
+                value: displaySettings.oneHandedReach,
+              },
+              {
+                key: 'highContrast',
+                title: 'High-Contrast Outlines',
+                desc: 'Sharper borders and focus rings for outdoor sunlight legibility',
+                value: displaySettings.highContrast,
+              },
+              {
+                key: 'reducedMotion',
+                title: 'Reduced Motion',
+                desc: 'Disables pulsing and sliding transitions across the app',
+                value: displaySettings.reducedMotion,
+              },
+              {
+                key: 'dangerZoneAlerts',
+                title: 'Crime Hotspot & Danger-Zone Warnings',
+                desc: 'Warn when approaching or entering a high-risk crime precinct or active hazard area',
+                value: displaySettings.dangerZoneAlerts,
+              },
+              {
+                key: 'hotspotAlertSound',
+                title: 'Hotspot Entry Alert Chime',
+                desc: 'Play a brief caution chime once when entering a high-risk crime hotspot',
+                value: displaySettings.hotspotAlertSound !== false,
+              },
+            ] as const).map((item) => (
+              <div key={item.key} className="flex items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="text-xs font-semibold text-slate-900 dark:text-slate-100">{item.title}</div>
+                  <div className="text-[11px] text-slate-500 dark:text-slate-400 leading-snug">{item.desc}</div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setDisplaySettings({ [item.key]: !item.value } as any)}
+                  className={`px-3 py-1.5 rounded-lg text-[11px] font-bold border shrink-0 transition-colors ${
+                    item.value
+                      ? 'bg-emerald-600 border-emerald-600 text-white'
+                      : 'bg-slate-100 dark:bg-slate-800 border-slate-300 dark:border-slate-700 text-slate-600 dark:text-slate-300'
+                  }`}
+                >
+                  {item.value ? 'ON' : 'OFF'}
+                </button>
+              </div>
+            ))}
+
+            {displaySettings.dangerZoneAlerts && (
+              <div className="flex items-center justify-between gap-3 pt-1">
+                <span className="text-xs font-medium text-slate-700 dark:text-slate-300">Alert Perimeter Radius</span>
+                <div className="flex items-center gap-1">
+                  {[1, 3, 5, 10].map((km) => (
+                    <button
+                      key={km}
+                      type="button"
+                      onClick={() => setDisplaySettings({ dangerZoneRadiusKm: km })}
+                      className={`px-2.5 py-1 text-[11px] font-semibold rounded-md border tabular-nums ${
+                        displaySettings.dangerZoneRadiusKm === km
+                          ? 'bg-amber-600 border-amber-600 text-white'
+                          : 'bg-slate-100 dark:bg-slate-800 border-slate-300 dark:border-slate-700 text-slate-600 dark:text-slate-300'
+                      }`}
+                    >
+                      {km} km
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+      )}
+
+      {/* Post-Trigger AI Welfare Check-In Timer Configuration */}
+      {showBlock('DISPATCH', 'post trigger ai welfare check-in timer kleva lizzy delay minutes speak listen') && (
+      <div className="rounded-2xl border border-emerald-500/30 bg-white dark:bg-[#0d1b34] overflow-hidden shadow-sm mt-4">
+        <div className="px-4 py-3 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between gap-2">
+          <div>
+            <h3 className="text-xs font-bold uppercase tracking-wider text-emerald-700 dark:text-emerald-400">
+              Post-Trigger AI Welfare Check-In Timer
+            </h3>
+            <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
+              Automatically pop up Kleva AI after an emergency trigger, speak &ldquo;Are you okay?&rdquo;, listen for Yes/No, capture a situational update, or restart the alert.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() =>
+              setDispatchSettings({
+                aiCheckInEnabled: dispatchSettings.aiCheckInEnabled === false ? true : false,
+              })
+            }
+            className={`px-3 py-1.5 rounded-lg text-[11px] font-bold border shrink-0 transition-colors ${
+              dispatchSettings.aiCheckInEnabled !== false
+                ? 'bg-emerald-600 border-emerald-600 text-white'
+                : 'bg-slate-100 dark:bg-slate-800 border-slate-300 dark:border-slate-700 text-slate-600 dark:text-slate-300'
+            }`}
+          >
+            {dispatchSettings.aiCheckInEnabled !== false ? 'ON' : 'OFF'}
+          </button>
+        </div>
+
+        <div className="p-4 space-y-4">
+          <div className="space-y-2">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-xs font-semibold text-slate-800 dark:text-slate-200">
+                Pop-Up Delay After Trigger
+              </span>
+              <span className="text-xs font-mono font-bold text-emerald-600 dark:text-emerald-400 tabular-nums">
+                {dispatchSettings.aiCheckInDelayMinutes ?? 5} min
+              </span>
+            </div>
+
+            <div className="grid grid-cols-5 gap-1.5">
+              {[1, 2, 5, 10, 15].map((mins) => {
+                const active = (dispatchSettings.aiCheckInDelayMinutes ?? 5) === mins;
+                return (
+                  <button
+                    key={mins}
+                    type="button"
+                    onClick={() => setDispatchSettings({ aiCheckInDelayMinutes: mins })}
+                    className={`py-2 text-xs font-bold rounded-lg border tabular-nums transition-colors ${
+                      active
+                        ? 'bg-emerald-600 border-emerald-600 text-white shadow-sm'
+                        : 'bg-slate-100 dark:bg-slate-900 border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-300 hover:border-emerald-500/60'
+                    }`}
+                  >
+                    {mins} min
+                  </button>
+                );
+              })}
+            </div>
+
+            <div className="flex items-center justify-between gap-3 pt-1">
+              <label
+                htmlFor="sl-ai-checkin-custom-mins"
+                className="text-[11px] text-slate-600 dark:text-slate-400"
+              >
+                Custom delay (1 – 60 minutes):
+              </label>
+              <input
+                id="sl-ai-checkin-custom-mins"
+                type="number"
+                min={1}
+                max={60}
+                value={dispatchSettings.aiCheckInDelayMinutes ?? 5}
+                onChange={(e) => {
+                  const val = Math.max(1, Math.min(60, Number(e.target.value) || 5));
+                  setDispatchSettings({ aiCheckInDelayMinutes: val });
+                }}
+                className="w-20 px-2.5 py-1.5 text-xs font-mono font-bold text-center rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-[#071124] text-slate-900 dark:text-white"
+              />
+            </div>
+          </div>
+
+          <div className="flex items-center justify-between gap-3 pt-2 border-t border-slate-200 dark:border-slate-800">
+            <div className="min-w-0">
+              <div className="text-xs font-semibold text-slate-900 dark:text-slate-100">
+                Auto-Speak &amp; Listen for Yes / No
+              </div>
+              <div className="text-[11px] text-slate-500 dark:text-slate-400">
+                Kleva speaks &ldquo;Are you okay?&rdquo; aloud and waits for your spoken or tapped response.
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() =>
+                setDispatchSettings({
+                  aiCheckInAutoSpeak: dispatchSettings.aiCheckInAutoSpeak === false ? true : false,
+                })
+              }
+              className={`px-3 py-1.5 rounded-lg text-[11px] font-bold border shrink-0 transition-colors ${
+                dispatchSettings.aiCheckInAutoSpeak !== false
+                  ? 'bg-emerald-600 border-emerald-600 text-white'
+                  : 'bg-slate-100 dark:bg-slate-800 border-slate-300 dark:border-slate-700 text-slate-600 dark:text-slate-300'
+              }`}
+            >
+              {dispatchSettings.aiCheckInAutoSpeak !== false ? 'ON' : 'OFF'}
+            </button>
+          </div>
+
+          <div className="space-y-1.5 pt-2 border-t border-slate-200 dark:border-slate-800">
+            <div className="flex items-center justify-between gap-2">
+              <label
+                htmlFor="sl-ai-safety-word"
+                className="text-xs font-semibold text-slate-900 dark:text-slate-100"
+              >
+                Spoken Safety Word
+              </label>
+              <span className="text-[10px] font-mono text-emerald-600 dark:text-emerald-400 uppercase">
+                Voice Verification
+              </span>
+            </div>
+            <p className="text-[11px] text-slate-500 dark:text-slate-400">
+              If Lizzy cannot confirm &ldquo;Yes&rdquo;, she will ask you to say this safety word to verify you are safe.
+            </p>
+            <input
+              id="sl-ai-safety-word"
+              type="text"
+              value={dispatchSettings.aiSafetyWord ?? 'all clear'}
+              onChange={(e) => setDispatchSettings({ aiSafetyWord: e.target.value })}
+              placeholder="e.g. all clear, sunshine, green light"
+              className="w-full px-3 py-2 text-xs font-mono rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-[#071124] text-slate-900 dark:text-white focus:outline-none focus:border-emerald-500"
+            />
+          </div>
+
+          <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-slate-200 dark:border-slate-800">
+            <span className="text-[11px] text-slate-500 dark:text-slate-400">
+              Preview the talking &amp; listening welfare check-in right now:
+            </span>
+            <button
+              type="button"
+              onClick={() => useAppStore.getState().setShowLizzyPopup(true)}
+              className="px-3.5 py-2 rounded-xl bg-cyan-600 hover:bg-cyan-500 text-white text-xs font-bold transition-colors whitespace-nowrap"
+            >
+              Test AI Check-In Now
+            </button>
+          </div>
+        </div>
+      </div>
+      )}
+
+      {/* Diagnostics Quick Panel */}
+      {showBlock('ADVANCED', 'diagnostics quick panel self-test gatt gps cache purge audit logs') && (
+      <div className="space-y-3 text-left mt-4 relative z-10 font-mono">
+        <h4 className="text-[9px] font-bold text-slate-500 uppercase tracking-widest font-display">
+          {t('settings.diagnostics_title')}
+        </h4>
+        <div className="grid grid-cols-2 gap-3 text-[10px] font-bold">
+          <button
+            onClick={() => {
+              useAppStore.getState().addAuditLog('SYSTEM', 'INFO', 'Self-Test Initiated', 'Checking GATT profiles, GPS providers, and local caches.');
+              useAppStore.getState().addToast("All system diagnostics are functional. BLE: Stable, GPS: High accuracy locked.", "success");
+            }}
+            className="bg-slate-950/40 border border-slate-900 rounded-2xl p-3 text-slate-200 hover:bg-slate-900 hover:text-white transition-all text-center"
+          >
+            {t('settings.diagnose_btn')}
+          </button>
+          <button
+            onClick={clearAuditLogs}
+            className="bg-slate-950/40 border border-red-500/10 rounded-2xl p-3 text-red-400 hover:bg-red-950/20 transition-all text-center"
+          >
+            {t('settings.purge_btn')}
+          </button>
+        </div>
+      </div>
+      )}
+
+      {/* Alert & Countdown Settings */}
+      {showBlock('DISPATCH', 'emergency dispatch order countdown timer floating sos bubble chat heads preset map tile provider native sms call') && (
+      <div className="space-y-3 text-left border-t border-slate-900 pt-4 mt-4 relative z-10 font-mono">
+        <h4 className="text-[9px] font-bold text-slate-500 uppercase tracking-widest font-display">
+          🚨 EMERGENCY &amp; DISPATCH ORDER
+        </h4>
+        <div className="bg-emerald-950/20 border border-emerald-500/20 rounded-xl p-3 text-[8px] font-mono text-emerald-300 space-y-1">
+          <div className="font-bold uppercase tracking-wider text-emerald-400">Canonical Dispatch Sequence (Native SMS &amp; Call Mandatory)</div>
+          <div>1. Server API / Cloud FCM (when reachable) → 2. Mandatory Native SMS → 3. Zero-Airtime USSD Relay (FCM + SMS, before call if enabled) → 4. Mandatory Native Call (stays on screen) → 5. WhatsApp</div>
+        </div>
+        <div className="bg-slate-950/40 border border-slate-900 rounded-2xl p-4 space-y-4">
+          {/* Floating SOS Overlay Settings (User Golden Spec) */}
+          <div className="border-t border-slate-800/50 pt-3 space-y-2">
+            <div className="flex justify-between items-center">
+              <div>
+                <h5 className="text-[9px] font-bold text-slate-300 uppercase flex items-center gap-1.5">
+                  <span>🔴</span> Floating SOS Bubble (Chat Heads Style)
+                </h5>
+                <p className="text-[8px] text-slate-500 mt-0.5">
+                  Enables a persistent draggable SOS trigger that floats over all native Android apps.
+                </p>
+              </div>
+              <label className="flex items-center space-x-2 cursor-pointer">
+                <span className={`text-[8px] font-bold ${isFloatingWidgetDeployed ? "text-red-400" : "text-slate-600"}`}>
+                  {isFloatingWidgetDeployed ? "ACTIVE" : "DISABLED"}
+                </span>
+                <input 
+                  type="checkbox" 
+                  checked={isFloatingWidgetDeployed} 
+                  onChange={e => {
+                    setFloatingWidgetDeployed(e.target.checked);
+                    NativeDispatchService.toggleFloatingWidget(e.target.checked);
+                    useAppStore.getState().addToast(
+                      e.target.checked ? 'Floating SOS button deployed.' : 'Floating SOS button disabled.',
+                      'info'
+                    );
+                  }}
+                  className="accent-red-500 w-4 h-4 cursor-pointer" 
+                />
+              </label>
+            </div>
+            {isFloatingWidgetDeployed && (
+              <div className="flex items-center justify-between p-2 bg-slate-900/60 rounded-xl border border-slate-800 text-[8px]">
+                <span className="text-slate-400 uppercase font-bold">BUBBLE SIZE:</span>
+                <div className="flex gap-1.5">
+                  {[52, 64, 78].map(sz => (
+                    <button
+                      key={sz}
+                      onClick={() => setFloatingWidgetSize(sz)}
+                      className={`px-2 py-0.5 rounded-lg font-bold ${
+                        floatingWidgetSize === sz ? 'bg-red-600 text-white' : 'bg-slate-950 text-slate-400'
+                      }`}
+                    >
+                      {sz}px
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Kleva AI Floating Icon Toggle (Removable on APK & Web) */}
+          <div className="border-t border-slate-800/50 pt-3">
+            <div className="flex justify-between items-center">
+              <div>
+                <h5 className="text-[9px] font-bold text-slate-300 uppercase flex items-center gap-1.5">
+                  <span>✨</span> Kleva AI Floating Icon
+                </h5>
+                <p className="text-[8px] text-slate-500 mt-0.5">
+                  Show or hide the compact floating Kleva AI shortcut button on screen (removable on APK).
+                </p>
+              </div>
+              <label className="flex items-center space-x-2 cursor-pointer">
+                <span className={`text-[8px] font-bold ${showKlevaFloatingIcon ? "text-emerald-400" : "text-slate-600"}`}>
+                  {showKlevaFloatingIcon ? "VISIBLE" : "HIDDEN"}
+                </span>
+                <input
+                  type="checkbox"
+                  checked={showKlevaFloatingIcon}
+                  onChange={e => {
+                    setShowKlevaFloatingIcon(e.target.checked);
+                    useAppStore.getState().addToast(
+                      e.target.checked ? 'Kleva AI floating icon shown.' : 'Kleva AI floating icon hidden.',
+                      'info'
+                    );
+                  }}
+                  className="accent-emerald-500 w-4 h-4 cursor-pointer"
+                />
+              </label>
+            </div>
+          </div>
+
+          {/* Configurable Dispatch Logic (User Golden Spec) */}
+          <div className="border-t border-slate-800/50 pt-3 space-y-3">
+            <h5 className="text-[9px] font-bold text-slate-300 uppercase flex items-center gap-1.5">
+              <span>⚡</span> Configurable Dispatch Engine & Presets
+            </h5>
+
+            <div className="space-y-1">
+              <label className="text-[8px] font-bold text-slate-500 uppercase block">Dispatch Channel Preset</label>
+              <select
+                value={dispatchSettings.dispatchPreset}
+                onChange={e => {
+                  const val = e.target.value as any;
+                  setDispatchSettings({ dispatchPreset: val });
+                  useAppStore.getState().addToast(`Dispatch preset switched to ${val.replace('_', ' ')}`, 'info');
+                }}
+                className="w-full bg-slate-950 border border-slate-900 rounded-xl px-3 py-2 text-[10px] text-slate-200 focus:outline-none focus:border-red-500/50 font-mono"
+              >
+                <option value="STRICT_OFFLINE">Strict Offline (USSD Dial *134*911# + Local GSM SMS)</option>
+                <option value="VIP_TWILIO_CLOUD">VIP Cloud (Twilio Voice IVR + VAPI AI + Africa's Talking)</option>
+                <option value="SMS_ONLY">SMS Only (Pure Direct GSM + SMS Gateway)</option>
+                <option value="CUSTOM">Custom Multi-Channel Sequential Queue</option>
+              </select>
+            </div>
+
+            <div className="flex justify-between items-center pt-1">
+              <div>
+                <span className="text-[8.5px] font-bold text-slate-400 uppercase block">Fullscreen Countdown Overlay</span>
+                <span className="text-[7.5px] text-slate-500">Show visual countdown modal over UI during grace period.</span>
+              </div>
+              <input
+                type="checkbox"
+                checked={dispatchSettings.countdownOverlayEnabled}
+                onChange={e => setDispatchSettings({ countdownOverlayEnabled: e.target.checked })}
+                className="accent-red-500 w-4 h-4"
+              />
+            </div>
+
+            {/* Adjustable SOS Countdown Timer (synced to both React UI and native PanicService) */}
+            <div className="bg-slate-950 border border-slate-900 rounded-xl p-3 space-y-2.5" data-testid="sos-countdown-timer-setting">
+              <div className="flex items-center justify-between gap-2">
+                <div>
+                  <span className="text-[8.5px] font-bold text-slate-200 uppercase block">⏱️ Adjustable SOS Countdown Timer</span>
+                  <span className="text-[7.5px] text-slate-500 font-sans">
+                    Grace window to cancel accidental triggers before SMS, USSD, and Call fire. Set to 0s for instant dispatch.
+                  </span>
+                </div>
+                <span className="px-2 py-0.5 rounded bg-red-950/70 border border-red-500/40 text-[9px] font-black text-red-300 shrink-0">
+                  {sosCountdownDuration === 0 ? '0s INSTANT' : `${sosCountdownDuration}s`}
+                </span>
+              </div>
+
+              <div className="grid grid-cols-6 gap-1.5">
+                {[0, 3, 5, 10, 15, 30].map(sec => {
+                  const active = sosCountdownDuration === sec;
+                  return (
+                    <button
+                      key={sec}
+                      type="button"
+                      onClick={() => {
+                        setSosCountdownDuration(sec);
+                        useAppStore.getState().addToast(
+                          sec === 0 ? 'SOS Countdown set to Instant (0s)' : `SOS Countdown timer set to ${sec} seconds`,
+                          'info'
+                        );
+                      }}
+                      className={`py-1.5 rounded-lg text-[8.5px] font-bold border transition-all ${
+                        active
+                          ? 'bg-red-600/25 border-red-500 text-red-200 shadow-sm'
+                          : 'bg-slate-900 border-slate-800 text-slate-400 hover:border-slate-700'
+                      }`}
+                    >
+                      {sec === 0 ? '0s' : `${sec}s`}
+                    </button>
+                  );
+                })}
+              </div>
+
+              <div className="flex items-center gap-3">
+                <span className="text-[7.5px] text-slate-500">0s</span>
+                <input
+                  type="range"
+                  min={0}
+                  max={30}
+                  step={1}
+                  value={sosCountdownDuration}
+                  onChange={e => setSosCountdownDuration(Number(e.target.value))}
+                  aria-label="SOS Countdown Duration Seconds"
+                  className="flex-1 accent-red-500 cursor-pointer"
+                />
+                <span className="text-[7.5px] text-slate-500">30s</span>
+              </div>
+            </div>
+
+            <div className="space-y-1 pt-1">
+              <label className="text-[8px] font-bold text-slate-500 uppercase block">Situational Map Engine</label>
+              <select
+                value={dispatchSettings.mapProvider}
+                onChange={e => {
+                  const val = e.target.value as any;
+                  setDispatchSettings({ mapProvider: val });
+                  useAppStore.getState().addToast(`Map provider updated to ${val.replace('_', ' ')}`, 'info');
+                }}
+                className="w-full bg-slate-950 border border-slate-900 rounded-xl px-3 py-2 text-[10px] text-slate-200 focus:outline-none focus:border-red-500/50 font-mono"
+              >
+                <option value="GOOGLE_MAPS">Google Maps (Hybrid & Live Traffic)</option>
+                <option value="OPENSTREETMAP">OpenStreetMap (Offline GIS Vector Tiles)</option>
+                <option value="MAPBOX">Mapbox Tactical Dark Mode</option>
+                <option value="HYBRID_SATELLITE">High-Resolution Satellite Imagery</option>
+              </select>
+            </div>
+          </div>
+        </div>
+      </div>
+      )}
+
+      {/* QR Code Instant Contact & FCM Linker (Generate & Scan with 2-Way / 1-Way Selection) */}
+      {showBlock('CONTACTS', 'qr code instant contact linker generate scan two-way one-way fcm') && (
+        <div className="mt-4 relative z-10">
+          <QrContactLinker />
+        </div>
+      )}
+
+      {/* Carrier USSD & Zero-Data Please-Call-Me (PCM) Emergency Settings */}
+      {showBlock('DISPATCH', 'ussd zero airtime zero data please call me pcm rain sim gateway carrier mtn vodacom cell c telkom') && (
+        <div className="bg-slate-950/40 border border-slate-900 rounded-2xl p-4 space-y-3 font-mono text-left mt-4 relative z-10">
+          <div className="flex justify-between items-center">
+            <h5 className="text-[9px] font-bold text-slate-300 uppercase flex items-center gap-1.5">
+              <span>📶</span> Zero-Data USSD "Please Call Me" System
+            </h5>
+            <span className={`px-2 py-0.5 rounded text-[8px] font-bold ${
+              Boolean(dispatchSettings.ussdEnabled) ? 'bg-emerald-950 text-emerald-400 border border-emerald-500/30' : 'bg-slate-900 text-slate-500'
+            }`}>
+              {Boolean(dispatchSettings.ussdEnabled) ? 'ACTIVE ON OFFLINE PANIC' : 'DISABLED'}
+            </span>
+          </div>
+
+          <p className="text-[7.5px] text-slate-400 leading-relaxed font-sans">
+            Zero-airtime carrier USSD fallback to your Rain SIM gateway. Automatically fires when you have <strong className="text-emerald-400">R0.00 airtime and 0MB data</strong> so the Rain SIM forwards your Please Call Me to the server and rings all emergency contacts with the SafetyLink app via FCM.
+          </p>
+
+          <div className="space-y-3 pt-1">
+            <div className="flex justify-between items-center bg-slate-950 p-2.5 rounded-xl border border-slate-900">
+              <div>
+                <span className="text-[8.5px] font-bold text-slate-300 uppercase block">Auto-Dial Rain Please Call Me When Offline</span>
+                <span className="text-[7.5px] text-slate-500">Sends carrier USSD Please Call Me to the Rain SIM whenever internet dispatch cannot reach the server.</span>
+              </div>
+              <input
+                type="checkbox"
+                checked={Boolean(dispatchSettings.ussdEnabled)}
+                onChange={e => {
+                  setDispatchSettings({ ussdEnabled: e.target.checked });
+                  useAppStore.getState().addToast(`USSD Auto-Dial ${e.target.checked ? 'Enabled' : 'Disabled'}`, 'info');
+                }}
+                className="accent-emerald-500 w-4 h-4 cursor-pointer"
+              />
+            </div>
+
+            <div className="space-y-1">
+              <label className="text-[8px] font-bold text-slate-500 uppercase block">Mobile Network Operator / Carrier Rules</label>
+              <div className="grid grid-cols-3 sm:grid-cols-6 gap-1.5">
+                {[
+                  { id: 'AUTO', label: 'Auto (SIM)', code: 'Auto-detect' },
+                  { id: 'MTN', label: 'MTN', code: '*121*#' },
+                  { id: 'VODACOM', label: 'Vodacom', code: '*140*#' },
+                  { id: 'CELL_C', label: 'Cell C', code: '*111*#' },
+                  { id: 'TELKOM', label: 'Telkom', code: '*140*#' },
+                  { id: 'CUSTOM', label: 'Custom', code: 'Template' }
+                ].map(c => {
+                  const isSelected = (dispatchSettings.carrierPreset || 'AUTO') === c.id;
+                  return (
+                    <button
+                      key={c.id}
+                      type="button"
+                      onClick={() => {
+                        setDispatchSettings({ carrierPreset: c.id as any });
+                        useAppStore.getState().addToast(`Carrier rule set to ${c.label}`, 'info');
+                      }}
+                      className={`p-2 rounded-xl text-center border transition-all ${
+                        isSelected
+                          ? 'bg-amber-950/40 border-amber-500/50 text-amber-300 shadow-sm'
+                          : 'bg-slate-950 border-slate-900 text-slate-400 hover:border-slate-800'
+                      }`}
+                    >
+                      <div className="text-[8.5px] font-bold uppercase">{c.label}</div>
+                      <div className="text-[7px] text-slate-500 font-mono mt-0.5">{c.code}</div>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {dispatchSettings.carrierPreset === 'CUSTOM' && (
+              <div className="space-y-1 animate-fadeIn">
+                <label className="text-[8px] font-bold text-slate-400 uppercase block">Custom USSD Template (use &#123;NUMBER&#125; placeholder)</label>
+                <input
+                  type="text"
+                  value={dispatchSettings.customUssdPattern || '*140*{NUMBER}#'}
+                  onChange={e => setDispatchSettings({ customUssdPattern: e.target.value })}
+                  placeholder="e.g. *140*{NUMBER}# or *121*{NUMBER}#"
+                  className="w-full bg-slate-950 border border-slate-900 rounded-xl px-3 py-2 text-[10px] text-slate-200 focus:outline-none focus:border-amber-500/50 font-mono"
+                />
+              </div>
+            )}
+
+            <div className="space-y-1">
+              <label className="text-[8px] font-bold text-slate-500 uppercase block">SafetyLink GSM Gateway SIM Number (Destination)</label>
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  value={dispatchSettings.pcmGatewayNumber || '0816738186'}
+                  onChange={e => setDispatchSettings({ pcmGatewayNumber: e.target.value })}
+                  placeholder="0816738186"
+                  className="flex-1 bg-slate-950 border border-slate-900 rounded-xl px-3 py-2 text-[10px] text-slate-200 focus:outline-none focus:border-emerald-500/50 font-mono"
+                />
+                <button
+                  type="button"
+                  onClick={() => {
+                    setDispatchSettings({ pcmGatewayNumber: '0816738186' });
+                    useAppStore.getState().addToast('Reset to default Rain SIM Gateway (081 673 8186)', 'info');
+                  }}
+                  className="px-3 py-1.5 bg-slate-900 hover:bg-slate-850 text-slate-400 hover:text-slate-200 rounded-xl text-[8px] font-bold uppercase"
+                >
+                  Rain Gateway
+                </button>
+              </div>
+            </div>
+
+            {/* Live Computed USSD String Preview & Test Button */}
+            {(() => {
+              const liveCode = resolveUssdCode({
+                carrierPreset: dispatchSettings.carrierPreset || 'AUTO',
+                customPattern: dispatchSettings.customUssdPattern || '*140*{NUMBER}#',
+                gatewayNumber: dispatchSettings.pcmGatewayNumber || '0816738186'
+              });
+              return (
+                <div className="p-3 bg-slate-950 border border-slate-900 rounded-xl flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2">
+                  <div>
+                    <span className="text-[7.5px] text-slate-500 uppercase block font-bold">Generated USSD String:</span>
+                    <span className="text-[11px] font-black text-amber-400 font-mono tracking-wider">{liveCode}</span>
+                  </div>
+                  <button
+                    type="button"
+                    disabled={isTestingUssd}
+                    onClick={async () => {
+                      setIsTestingUssd(true);
+                      try {
+                        useAppStore.getState().addToast(`Dialing USSD string: ${liveCode}...`, 'info');
+                        const res = await firePleaseCallMe(liveCode);
+                        if (res.success) {
+                          useAppStore.getState().addToast(`USSD transmitted: ${liveCode}`, 'success');
+                        } else {
+                          useAppStore.getState().addToast(`USSD dial complete or opened in dialer`, 'info');
+                        }
+                      } catch (err: any) {
+                        useAppStore.getState().addToast(`USSD error: ${err?.message || err}`, 'error');
+                      } finally {
+                        setIsTestingUssd(false);
+                      }
+                    }}
+                    className="w-full sm:w-auto px-4 py-2 bg-amber-600 hover:bg-amber-500 text-white font-bold rounded-xl text-[9px] tracking-wider uppercase transition-all shadow-md active:scale-95 disabled:opacity-50"
+                  >
+                    {isTestingUssd ? 'DIALING...' : '⚡ TEST DIAL USSD'}
+                  </button>
+                </div>
+              );
+            })()}
+          </div>
+        </div>
+      )}
+
+      {/* Live SMS / USSD / FCM Gateway Diagnostics & Trigger Test Console */}
+      {showBlock('ADVANCED', 'live sms ussd fcm gateway diagnostics trigger test console provider health') && (
+        <div className="bg-slate-950/40 border border-slate-900 rounded-2xl p-4 space-y-3 font-mono text-left mt-4 relative z-10" data-testid="live-trigger-test-console">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+              <div>
+                <h5 className="text-[9.5px] font-bold text-emerald-400 uppercase flex items-center gap-1.5">
+                  <span>🧪</span> Live SMS, USSD &amp; FCM Trigger Test Console
+                </h5>
+                <p className="text-[8px] text-slate-500 mt-0.5">
+                  Verify real-world SMS, Voice, USSD, and FCM loud alarm delivery directly to any test number (no profile required).
+                </p>
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                <button
+                  type="button"
+                  disabled={isSyncingFcm}
+                  onClick={handleSyncProfileAndFcm}
+                  className="px-3 py-1.5 rounded-xl bg-emerald-950/70 hover:bg-emerald-900/70 border border-emerald-500/40 text-[8.5px] font-bold text-emerald-300 uppercase tracking-wider"
+                >
+                  {isSyncingFcm ? 'Syncing...' : '🔄 Sync Profile & FCM'}
+                </button>
+                <button
+                  type="button"
+                  disabled={isCheckingHealth}
+                  onClick={handleCheckGatewayHealth}
+                  className="px-3 py-1.5 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-700 text-[8.5px] font-bold text-cyan-300 uppercase tracking-wider"
+                >
+                  {isCheckingHealth ? 'Checking...' : '↻ Check Gateways'}
+                </button>
+              </div>
+            </div>
+
+            {providerHealth && (
+              <div className="p-2.5 bg-slate-950 border border-slate-800 rounded-xl grid grid-cols-2 sm:grid-cols-3 gap-1.5 text-[8px]">
+                <div className="flex items-center justify-between px-2 py-1 rounded bg-slate-900/70">
+                  <span className="text-slate-400">SMSGate (Rain)</span>
+                  <span className={providerHealth.providers?.smsgate ? 'text-emerald-400 font-bold' : 'text-amber-400 font-bold'}>
+                    {providerHealth.providers?.smsgate ? 'ONLINE' : 'CHECK'}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between px-2 py-1 rounded bg-slate-900/70">
+                  <span className="text-slate-400">Twilio SMS</span>
+                  <span className={providerHealth.providers?.twilio ? 'text-emerald-400 font-bold' : 'text-slate-500 font-bold'}>
+                    {providerHealth.providers?.twilio ? 'ONLINE' : 'OFF'}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between px-2 py-1 rounded bg-slate-900/70">
+                  <span className="text-slate-400">VAPI Voice</span>
+                  <span className={providerHealth.providers?.vapi ? 'text-emerald-400 font-bold' : 'text-slate-500 font-bold'}>
+                    {providerHealth.providers?.vapi ? 'ONLINE' : 'OFF'}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between px-2 py-1 rounded bg-slate-900/70">
+                  <span className="text-slate-400">FCM Server</span>
+                  <span className={providerHealth.providers?.fcm ? 'text-emerald-400 font-bold' : 'text-amber-400 font-bold'}>
+                    {providerHealth.providers?.fcm ? 'READY' : 'UNSET'}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between px-2 py-1 rounded bg-slate-900/70">
+                  <span className="text-slate-400">Target FCM App</span>
+                  <span className={providerHealth.tokenStatus?.registered ? 'text-emerald-400 font-bold' : 'text-amber-400 font-bold'}>
+                    {providerHealth.tokenStatus?.registered
+                      ? `${providerHealth.tokenStatus.deviceCount} DEVICE(S)`
+                      : 'NOT REGISTERED'}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between px-2 py-1 rounded bg-slate-900/70">
+                  <span className="text-slate-400">Rain PCM SIM</span>
+                  <span className="text-cyan-300 font-bold">{providerHealth.pcmGateway || '0816738186'}</span>
+                </div>
+                {providerHealth.nativeFcm && (
+                  <div className="flex items-center justify-between px-2 py-1 rounded bg-slate-900/70 col-span-2 sm:col-span-3">
+                    <span className="text-slate-400">This Android Device FCM</span>
+                    <span className={providerHealth.nativeFcm.hasToken && providerHealth.nativeFcm.lastHttp === 200 ? 'text-emerald-400 font-bold' : 'text-amber-400 font-bold'}>
+                      {providerHealth.nativeFcm.hasToken
+                        ? `TOKEN READY • SYNC HTTP ${providerHealth.nativeFcm.lastHttp || 'PENDING'} (${providerHealth.nativeFcm.registeredPhone || providerHealth.nativeFcm.savedPhone || 'NO PHONE'})`
+                        : 'NO FCM TOKEN YET — TAP SYNC'}
+                    </span>
+                  </div>
+                )}
+              </div>
+            )}
+
+            <div className="space-y-2">
+              <div className="flex gap-2">
+                <input
+                  type="tel"
+                  value={liveTestPhone}
+                  onChange={e => setLiveTestPhone(e.target.value)}
+                  placeholder="e.g. 065 830 7216 or +27658307216"
+                  className="flex-1 bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-[10px] text-slate-100 focus:outline-none focus:border-emerald-500/50 font-mono"
+                />
+                <button
+                  type="button"
+                  onClick={() => setLiveTestPhone('065 830 7216')}
+                  className="px-2.5 py-2 bg-slate-900 hover:bg-slate-800 border border-slate-800 text-amber-300 rounded-xl text-[8px] font-bold uppercase whitespace-nowrap"
+                >
+                  065 830 7216
+                </button>
+              </div>
+
+              <label className="flex items-center gap-2 text-[8.5px] text-slate-400 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={liveTestSmsOnly}
+                  onChange={e => setLiveTestSmsOnly(e.target.checked)}
+                  className="accent-emerald-500"
+                />
+                <span>SMS + FCM Alarm Ring only (skip automated AI voice call during test)</span>
+              </label>
+
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                <button
+                  type="button"
+                  disabled={isSendingLiveTest}
+                  onClick={handleSendLiveTestTrigger}
+                  className="py-2.5 px-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-bold text-[9px] uppercase tracking-wider transition-all shadow-md"
+                >
+                  {isSendingLiveTest ? 'Transmitting...' : '🚀 Send SMS + FCM Test'}
+                </button>
+                <button
+                  type="button"
+                  disabled={isSendingFcmTest}
+                  onClick={handleSendRealFcmRingTest}
+                  className="py-2.5 px-3 rounded-xl bg-cyan-600 hover:bg-cyan-500 disabled:opacity-50 text-white font-bold text-[9px] uppercase tracking-wider transition-all shadow-md"
+                >
+                  {isSendingFcmTest ? 'Pushing FCM...' : '📲 Send Real FCM Ring'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    useAppStore.getState().triggerIncomingEmergencyRing({
+                      callerName: currentUser?.fullName || 'Emergency Contact Test',
+                      callerNumber: liveTestPhone || '065 830 7216',
+                      location: 'Diagnostic Ring Verification (Loud Alarm Test)',
+                      lat: useAppStore.getState().userLocation?.lat,
+                      lng: useAppStore.getState().userLocation?.lng,
+                      source: 'FCM_LOCAL_TEST',
+                    });
+                  }}
+                  className="py-2.5 px-3 rounded-xl bg-red-600/20 hover:bg-red-600/30 border border-red-500/40 text-red-300 font-bold text-[9px] uppercase tracking-wider transition-all"
+                >
+                  🔔 Local Siren Test
+                </button>
+              </div>
+            </div>
+
+            {liveTestResult && (
+              <div className="p-3 bg-slate-950 border border-slate-800 rounded-xl space-y-1.5 text-[8.5px] font-mono">
+                <div className="flex items-center justify-between">
+                  <span className={`font-black uppercase ${liveTestResult.ok ? 'text-emerald-400' : 'text-amber-400'}`}>
+                    {liveTestResult.ok ? '✓ GATEWAY ACCEPTED DISPATCH' : '⚠️ DISPATCH RESPONSE'}
+                  </span>
+                  <span className="text-slate-500">HTTP {liveTestResult.httpStatus || 'ERR'}</span>
+                </div>
+                {liveTestResult.message && (
+                  <p className="text-amber-300">{liveTestResult.message}</p>
+                )}
+                {liveTestResult.error && (
+                  <p className="text-red-400">{liveTestResult.error}</p>
+                )}
+                {Array.isArray(liveTestResult.results) && liveTestResult.results.length > 0 && (
+                  <div className="space-y-1 pt-1 border-t border-slate-900">
+                    {liveTestResult.results.map((r: any, idx: number) => (
+                      <div key={idx} className="flex items-center justify-between gap-2 text-[8px]">
+                        <span className="text-slate-300 truncate">
+                          [{r.channel}] {r.provider} → {r.to}
+                        </span>
+                        <span className={r.ok ? 'text-emerald-400 font-bold shrink-0' : 'text-red-400 font-bold shrink-0'}>
+                          {r.ok ? 'OK' : `FAIL ${r.status || ''}`}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+      )}
+
+      {/* Configurable Smart Routing, 5-Minute PCM Dedupe & Reverse-Charge USSD */}
+      {showBlock('DISPATCH', 'smart emergency routing dedupe reverse charge ussd data first online fcm rain sms') && (
+        <div className="bg-slate-950/60 border border-cyan-500/30 rounded-2xl p-4 space-y-3.5 font-mono text-left mt-4 relative z-10">
+          <div className="flex items-start justify-between gap-2">
+            <div>
+              <h5 className="text-[10px] font-black text-cyan-300 uppercase tracking-wider flex items-center gap-1.5">
+                <span>🛡️</span> Smart Emergency Routing, 5-Min Dedupe & Reverse-Charge USSD
+              </h5>
+              <p className="text-[8.5px] text-slate-400 mt-0.5 font-sans">
+                FCM Loud Alarm ringing is <strong className="text-emerald-400">always active</strong> on every emergency alert. Configure how SMS and offline zero-airtime USSD behave to prevent accidental SMS drain.
+              </p>
+            </div>
+          </div>
+
+          {/* Toggle 1: Online Data-First Mode (FCM Loud Ring primary, save Rain SMS) */}
+          <label className="flex items-start justify-between gap-3 p-3 rounded-xl bg-slate-900/70 border border-slate-800 cursor-pointer">
+            <div className="space-y-0.5">
+              <span className="text-[9.5px] font-bold text-slate-100 block">Online Data-First Mode (Save Rain SIM SMSs)</span>
+              <span className="text-[8.5px] text-slate-400 font-sans block">
+                When you have Wi-Fi or mobile data, ring contacts loudly via free FCM first and skip Rain SMS if FCM reaches their phone. Contacts without the app still receive SMS automatically.
+              </span>
+            </div>
+            <input
+              type="checkbox"
+              checked={dispatchSettings.preferFcmOnline !== false}
+              onChange={(e) => {
+                setDispatchSettings({ preferFcmOnline: e.target.checked });
+                useAppStore.getState().addToast(
+                  e.target.checked ? 'Online Data-First Mode enabled (FCM primary, Rain SMS conserved)' : 'Always-Include SMS enabled alongside FCM',
+                  'success'
+                );
+              }}
+              className="mt-1 accent-cyan-500 w-4 h-4 shrink-0"
+            />
+          </label>
+
+          {/* Control 2: Configurable Please Call Me / SMS Dedupe Cooldown */}
+          <div className="p-3 rounded-xl bg-slate-900/70 border border-slate-800 space-y-2">
+            <div className="flex items-center justify-between gap-2">
+              <div>
+                <span className="text-[9.5px] font-bold text-slate-100 block">Please Call Me & SMS Repeat Cooldown</span>
+                <span className="text-[8.5px] text-slate-400 font-sans block">
+                  Prevents sending duplicate Please Call Me / SMS alerts if pressed again within this window (recommended: 5 minutes).
+                </span>
+              </div>
+              <span className="text-[10px] font-black text-emerald-400 shrink-0">
+                {(dispatchSettings.pcmCooldownMinutes ?? 5) === 0 ? 'OFF' : `${dispatchSettings.pcmCooldownMinutes ?? 5} MIN`}
+              </span>
+            </div>
+            <div className="flex flex-wrap gap-1.5">
+              {[0, 2, 5, 10, 15].map((mins) => {
+                const active = (dispatchSettings.pcmCooldownMinutes ?? 5) === mins;
+                return (
+                  <button
+                    key={mins}
+                    type="button"
+                    onClick={() => {
+                      setDispatchSettings({ pcmCooldownMinutes: mins });
+                      useAppStore.getState().addToast(
+                        mins === 0 ? 'PCM cooldown disabled' : `Please Call Me & SMS dedupe set to ${mins} minutes`,
+                        'success'
+                      );
+                    }}
+                    className={`px-2.5 py-1 rounded-lg text-[8.5px] font-bold uppercase border transition-all ${
+                      active
+                        ? 'bg-emerald-600/30 border-emerald-400 text-emerald-200'
+                        : 'bg-slate-950 border-slate-800 text-slate-400 hover:text-slate-200'
+                    }`}
+                  >
+                    {mins === 0 ? 'Off' : mins === 5 ? '5 min (Recommended)' : `${mins} min`}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Control 3: Offline Zero-Airtime USSD / Reverse-Charge Call Mode */}
+          <div className="p-3 rounded-xl bg-slate-900/70 border border-slate-800 space-y-2.5">
+            <div>
+              <span className="text-[9.5px] font-bold text-slate-100 block">Zero-Airtime Offline USSD / Reverse-Charge Strategy</span>
+              <span className="text-[8.5px] text-slate-400 font-sans block">
+                Choose what SafetyLink dials when you have R0 airtime and R0 data.
+              </span>
+            </div>
+            <div className="grid grid-cols-1 gap-1.5">
+              {[
+                {
+                  id: 'RAIN_PCM',
+                  title: 'Rain Gateway Please Call Me (Cloud Relay)',
+                  desc: 'Sends free Please Call Me to Rain gateway → server rings all contacts via FCM + sends GPS SMS.',
+                },
+                {
+                  id: 'DIRECT_CONTACT_PCM',
+                  title: 'Direct Please Call Me to #1 Emergency Contact',
+                  desc: 'Dials carrier-matched *121* / *140* / *111* straight to your primary emergency contact (R0 cost).',
+                },
+                {
+                  id: 'REVERSE_CHARGE_CALL',
+                  title: 'Reverse-Charge Call (Emergency Contact Pays — MTN 127 / Vodacom)',
+                  desc: 'Dials reverse-charge prefix + your #1 Emergency Contact so their phone rings and they accept call charges on their balance.',
+                },
+              ].map((opt) => {
+                const selected = (dispatchSettings.offlineUssdMode || 'RAIN_PCM') === opt.id;
+                return (
+                  <button
+                    key={opt.id}
+                    type="button"
+                    onClick={() => {
+                      setDispatchSettings({ offlineUssdMode: opt.id as any, ussdEnabled: true });
+                      useAppStore.getState().addToast(`Offline USSD mode set to ${opt.title}`, 'success');
+                    }}
+                    className={`p-2.5 rounded-xl border text-left transition-all ${
+                      selected
+                        ? 'bg-cyan-950/40 border-cyan-400/60 text-cyan-100'
+                        : 'bg-slate-950/70 border-slate-800 text-slate-300 hover:border-slate-700'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-[9px] font-black">{opt.title}</span>
+                      {selected && <span className="text-[8px] px-1.5 py-0.5 rounded bg-cyan-500/20 text-cyan-300 font-bold">ACTIVE</span>}
+                    </div>
+                    <p className="text-[8px] text-slate-400 font-sans mt-0.5">{opt.desc}</p>
+                  </button>
+                );
+              })}
+            </div>
+
+            {(dispatchSettings.offlineUssdMode || 'RAIN_PCM') === 'REVERSE_CHARGE_CALL' && (
+              <div className="pt-2 border-t border-slate-800 space-y-1.5">
+                <label className="text-[8.5px] font-bold text-amber-300 uppercase block">
+                  Reverse-Charge Network Prefix (MTN Pay4Me: 127 · Vodacom: 082180)
+                </label>
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={dispatchSettings.reverseChargePrefix ?? '127'}
+                    onChange={(e) => setDispatchSettings({ reverseChargePrefix: e.target.value })}
+                    placeholder="e.g. 127 or *127*{NUMBER}#"
+                    className="flex-1 bg-slate-950 border border-slate-800 rounded-lg px-3 py-1.5 text-[10px] text-slate-100 font-mono"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setDispatchSettings({ reverseChargePrefix: '127' })}
+                    className="px-2 py-1 bg-slate-900 border border-slate-700 rounded-lg text-[8px] text-amber-300 font-bold"
+                  >
+                    MTN 127
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setDispatchSettings({ reverseChargePrefix: '082180' })}
+                    className="px-2 py-1 bg-slate-900 border border-slate-700 rounded-lg text-[8px] text-red-300 font-bold"
+                  >
+                    Vodacom
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Dispatch & Mini-App Logs Terminal (User Golden Spec) */}
+      {showBlock('ADVANCED', 'native dispatch notification mini-app logs history') && (
+        <div className="bg-slate-950/40 border border-slate-900 rounded-2xl p-4 space-y-3 font-mono text-left mt-4 relative z-10">
+          <div className="flex justify-between items-center">
+            <h5 className="text-[9px] font-bold text-slate-300 uppercase flex items-center gap-1.5">
+              <span>📜</span> Native Dispatch & Notification Logs
+            </h5>
+            <div className="flex gap-2">
+              <button
+                onClick={() => {
+                  clearDispatchLogs();
+                  clearNotificationPanelLogs();
+                  useAppStore.getState().addToast('Dispatch logs cleared', 'info');
+                }}
+                className="text-[7.5px] text-slate-500 hover:text-slate-300 uppercase"
+              >
+                Clear
+              </button>
+            </div>
+          </div>
+
+          <div className="space-y-2 max-h-48 overflow-y-auto pr-1">
+            {dispatchLogs.length === 0 && notificationPanelLogs.length === 0 ? (
+              <p className="text-[8px] text-slate-600 text-center py-4">No recent emergency dispatch activity logged.</p>
+            ) : (
+              <>
+                {dispatchLogs.slice(0, 10).map(log => (
+                  <div key={log.id} className="p-2 bg-slate-950 border border-slate-900 rounded-xl text-[8px] space-y-0.5">
+                    <div className="flex justify-between text-slate-400">
+                      <span className="font-bold text-red-400">[{log.channel}] ➔ {log.target}</span>
+                      <span className={`px-1 py-0.2 rounded font-black ${
+                        log.status === 'SENT' || log.status === 'DELIVERED' ? 'text-emerald-400' :
+                        log.status === 'INITIATED' ? 'text-cyan-400' : 'text-amber-400'
+                      }`}>{log.status}</span>
+                    </div>
+                    <p className="text-slate-500">{log.details}</p>
+                    <span className="text-[7px] text-slate-600 block">{new Date(log.timestamp).toLocaleTimeString()} • Unit: {log.unitId}</span>
+                  </div>
+                ))}
+                {notificationPanelLogs.slice(0, 6).map(log => (
+                  <div key={log.id} className="p-2 bg-slate-950/70 border border-slate-900/80 rounded-xl text-[8px] space-y-0.5">
+                    <div className="flex justify-between text-slate-400">
+                      <span className="font-bold text-indigo-400">[MINI-APP] {log.action}</span>
+                      <span className="text-emerald-400 font-bold">{log.status}</span>
+                    </div>
+                    <p className="text-slate-500">{log.details}</p>
+                    <span className="text-[7px] text-slate-600 block">{new Date(log.timestamp).toLocaleTimeString()}</span>
+                  </div>
+                ))}
+              </>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Silent Mode & Decoy Calculator Disguise */}
+      {showBlock('SECURITY', 'silent mode mute sirens decoy calculator disguise duress passcode') && (
+        <div className="bg-slate-950/40 border border-slate-900 rounded-2xl p-4 space-y-3 font-mono text-left mt-4 relative z-10">
+          <div className="flex justify-between items-center">
+            <h5 className="text-[9px] font-bold text-slate-500 uppercase">Silent Mode</h5>
+            <label className="flex items-center space-x-2 cursor-pointer">
+              <span className="text-[8px] text-slate-600">Enabled</span>
+              <input 
+                type="checkbox" 
+                checked={silenceAlerts} 
+                onChange={e => setSilenceAlerts(e.target.checked)}
+                className="accent-red-500" 
+              />
+            </label>
+          </div>
+          <p className="text-[8px] text-slate-500 mt-1">Mutes all sirens during panic activation.</p>
+
+          <div className="flex justify-between items-center border-t border-slate-800/50 pt-3">
+            <div>
+              <h5 className="text-[9px] font-bold text-slate-400 uppercase flex items-center gap-1.5">
+                <span>🧮</span> Decoy Mode (Calculator Disguise)
+              </h5>
+              <p className="text-[8px] text-slate-500 mt-0.5">
+                Launches an operational calculator to mask SafetyLink under duress.
+              </p>
+            </div>
+            <label className="flex items-center space-x-2 cursor-pointer">
+              <span className={`text-[8px] font-bold ${decoyActive ? "text-emerald-400" : "text-slate-600"}`}>
+                {decoyActive ? "ARMED" : "OFF"}
+              </span>
+              <input 
+                type="checkbox" 
+                checked={decoyActive} 
+                onChange={e => {
+                  setDecoyActive(e.target.checked);
+                  useAppStore.getState().addToast(
+                    e.target.checked 
+                      ? 'Calculator disguise armed. Enter ' + (decoyCode || '1911') + '= to unlock.' 
+                      : 'Calculator disguise disarmed.', 
+                    'info'
+                  );
+                }}
+                className="accent-emerald-500 w-4 h-4 cursor-pointer" 
+              />
+            </label>
+          </div>
+          {decoyActive && (
+            <div className="p-2.5 bg-emerald-950/20 border border-emerald-900/30 rounded-xl space-y-1.5">
+              <div className="flex justify-between text-[8px] font-mono text-emerald-400">
+                <span>Unlock Passcode: <strong>{decoyCode || '1911'}=</strong></span>
+                <span>Silent SOS Code: <strong>{decoyDistressCode || '9111'}=</strong></span>
+              </div>
+              <p className="text-[7.5px] text-slate-400">
+                To return to SafetyLink at any time, type your passcode into the calculator and press <strong>=</strong>.
+              </p>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Primary Cellular SIM Card Selection & Sequential Pipeline Card */}
+      {showBlock('DISPATCH', 'primary cellular sim card selection dual sim auto lock radio modem sequential dispatch pipeline') && (
+        <div className="bg-slate-950/60 border border-slate-900 rounded-2xl p-4 sm:p-5 space-y-4 font-mono shadow-xl relative overflow-hidden mt-4 text-left z-10">
+          <div className="absolute top-0 right-0 w-48 h-48 bg-emerald-500/5 rounded-full blur-3xl pointer-events-none" />
+          
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-900/80 pb-3">
+            <div>
+              <div className="flex items-center gap-2">
+                <span className="text-base">📶</span>
+                <h4 className="text-[10px] font-bold text-slate-200 uppercase tracking-wider">
+                  Primary Cellular SIM Card Selection (Emergency Auto-Lock)
+                </h4>
+              </div>
+              <p className="text-[8px] text-slate-500 mt-0.5">
+                Pre-locks your chosen SIM card so Android never presents a &quot;Choose SIM 1 or SIM 2&quot; prompt during distress.
+              </p>
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="text-[7.5px] px-2 py-0.5 rounded-full font-bold uppercase bg-emerald-500/10 text-emerald-400 border border-emerald-500/30">
+                {preferredSimId === -1 ? 'AUTO-LOCK (DEFAULT)' : `LOCKED: SUB ${preferredSimId}`}
+              </span>
+              <button
+                type="button"
+                onClick={() => loadSimCards()}
+                className="px-2 py-0.5 bg-slate-900 hover:bg-slate-800 text-slate-400 hover:text-slate-200 rounded text-[7.5px] border border-slate-800 transition-all"
+                title="Refresh SIM card detection"
+              >
+                ↻ Scan SIMs
+              </button>
+            </div>
+          </div>
+
+          {/* SIM Selector Grid */}
+          <div className="space-y-2">
+            <label className="text-[8.5px] font-bold text-slate-400 uppercase block">
+              Active Radio Modem Assignment:
+            </label>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+              {/* Option 1: Auto / System Default */}
+              <button
+                type="button"
+                onClick={() => setPreferredSim(-1)}
+                className={`p-3 rounded-xl border text-left transition-all relative ${
+                  preferredSimId === -1
+                    ? 'bg-emerald-950/30 border-emerald-500/60 shadow-lg shadow-emerald-950/40'
+                    : 'bg-slate-900/30 border-slate-900 hover:border-slate-800'
+                }`}
+              >
+                <div className="flex items-center justify-between mb-1">
+                  <span className="text-[9px] font-bold text-slate-200">System Default</span>
+                  <span className={`w-3 h-3 rounded-full border flex items-center justify-center ${
+                    preferredSimId === -1 ? 'border-emerald-400 bg-emerald-400/20' : 'border-slate-700'
+                  }`}>
+                    {preferredSimId === -1 && <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />}
+                  </span>
+                </div>
+                <p className="text-[7.5px] text-slate-400 font-mono">
+                  Auto-routed via OS default outgoing telephony account. Zero prompts.
+                </p>
+                <span className="text-[7px] text-emerald-400 font-bold mt-1.5 inline-block">
+                  RECOMMENDED FOR SINGLE SIM
+                </span>
+              </button>
+
+              {/* Dynamic SIMs from Device */}
+              {availableSims.map((sim, idx) => (
+                <button
+                  key={sim.subscriptionId}
+                  type="button"
+                  onClick={() => setPreferredSim(sim.subscriptionId)}
+                  className={`p-3 rounded-xl border text-left transition-all relative ${
+                    preferredSimId === sim.subscriptionId
+                      ? 'bg-cyan-950/30 border-cyan-500/60 shadow-lg shadow-cyan-950/40'
+                      : 'bg-slate-900/30 border-slate-900 hover:border-slate-800'
+                  }`}
+                >
+                  <div className="flex items-center justify-between mb-1">
+                    <span className="text-[9px] font-bold text-slate-200">
+                      SIM {sim.slot + 1}: {sim.carrier || `Slot ${sim.slot}`}
+                    </span>
+                    <span className={`w-3 h-3 rounded-full border flex items-center justify-center ${
+                      preferredSimId === sim.subscriptionId ? 'border-cyan-400 bg-cyan-400/20' : 'border-slate-700'
+                    }`}>
+                      {preferredSimId === sim.subscriptionId && <span className="w-1.5 h-1.5 rounded-full bg-cyan-400" />}
+                    </span>
+                  </div>
+                  <p className="text-[7.5px] text-slate-400 font-mono truncate">
+                    {sim.label || `Hardware Radio Slot ${sim.slot}`}
+                  </p>
+                  <span className="text-[7px] text-cyan-400 font-bold mt-1.5 inline-block">
+                    SLOT {sim.slot} • SUB #{sim.subscriptionId}
+                  </span>
+                </button>
+              ))}
+
+              {/* Fallback if no SIMs detected */}
+              {availableSims.length === 0 && (
+                <div className="col-span-2 p-3 rounded-xl border border-dashed border-slate-800/80 bg-slate-900/20 text-center">
+                  <p className="text-[8px] text-slate-500">
+                    Scanning active SIM hardware slots... (Detected on Android device with READ_PHONE_STATE).
+                  </p>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Sequential Timed Non-Intercepting Dispatch Pipeline Indicator */}
+          <div className="bg-slate-900/40 border border-slate-900/80 rounded-xl p-3 space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="text-[8.5px] font-bold text-slate-300 uppercase flex items-center gap-1.5">
+                <span>⏱️</span> Sequential, Timed, Non-Intercepting Dispatch Sequence
+              </span>
+              <span className="text-[7px] text-amber-400 bg-amber-400/10 px-1.5 py-0.5 rounded border border-amber-400/20 font-bold">
+                RADIO MODEM COLLISION SHIELD ACTIVE
+              </span>
+            </div>
+            <p className="text-[7.5px] text-slate-500">
+              Emergency channels fire sequentially in strict order to prevent cellular transceiver bus contention:
+            </p>
+
+            <div className="grid grid-cols-1 sm:grid-cols-4 gap-2 pt-1">
+              <div className="p-2 bg-slate-950 border border-slate-800 rounded-lg text-[7.5px] space-y-1">
+                <div className="flex items-center justify-between text-indigo-400 font-bold">
+                  <span>STAGE 1</span>
+                  <span>T+0.0s</span>
+                </div>
+                <div className="text-slate-300 font-bold">Cloud &amp; Mesh Sync</div>
+                <p className="text-slate-500 text-[7px]">
+                  Flushes IP packets to Cloud Gateway &amp; ThingsBoard before cellular voice locks.
+                </p>
+              </div>
+
+              <div className="p-2 bg-slate-950 border border-slate-800 rounded-lg text-[7.5px] space-y-1">
+                <div className="flex items-center justify-between text-cyan-400 font-bold">
+                  <span>STAGE 2</span>
+                  <span>T+1.5s</span>
+                </div>
+                <div className="text-slate-300 font-bold">GSM SMS Broadcast</div>
+                <p className="text-slate-500 text-[7px]">
+                  PDU transmitted directly via chosen SIM card with incident GPS coordinates.
+                </p>
+              </div>
+
+              <div className="p-2 bg-slate-950 border border-slate-800 rounded-lg text-[7.5px] space-y-1">
+                <div className="flex items-center justify-between text-amber-400 font-bold">
+                  <span>STAGE 3</span>
+                  <span>BEFORE CALL</span>
+                </div>
+                <div className="text-slate-300 font-bold">Zero-Airtime USSD Relay</div>
+                <p className="text-slate-500 text-[7px]">
+                  When enabled &amp; offline, fires Please Call Me to gateway for FCM + SMS before voice locks the line.
+                </p>
+              </div>
+
+              <div className="p-2 bg-slate-950 border border-slate-800 rounded-lg text-[7.5px] space-y-1">
+                <div className="flex items-center justify-between text-emerald-400 font-bold">
+                  <span>STAGE 4</span>
+                  <span>MANDATORY</span>
+                </div>
+                <div className="text-slate-300 font-bold">Direct Voice Call</div>
+                <p className="text-slate-500 text-[7px]">
+                  Binds phone circuit via CALL_PHONE and returns SafetyLink to foreground (call stays in notification bar).
+                </p>
+              </div>
+            </div>
+
+            <div className="p-2 bg-emerald-950/20 border border-emerald-900/30 rounded-lg text-[7.5px] text-emerald-400/90 flex items-center gap-2 mt-1">
+              <span className="text-xs">🛡️</span>
+              <span>
+                <strong>Zero-Prompt Guarantee:</strong> By pre-binding Telecom PhoneAccountHandle and SmsManager subscriptionId at the native Android layer, SafetyLink guarantees zero UI dialog prompts during life-critical emergencies.
+              </span>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* BLE & iTAG Hardware Button Configuration Card */}
+      {showBlock('HARDWARE', 'ble itag bluetooth hardware button keyfob trigger single double triple long press') && (
+        <div className="bg-slate-950/60 border border-slate-900 rounded-2xl p-4 sm:p-5 space-y-4 font-mono shadow-xl relative overflow-hidden mt-4 text-left z-10" data-testid="itag-flexible-config">
+          <div className="absolute top-0 right-0 w-48 h-48 bg-cyan-500/5 rounded-full blur-3xl pointer-events-none" />
+          
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-900/80 pb-3">
+            <div>
+              <div className="flex items-center gap-2">
+                <span className="text-base">🔘</span>
+                <h4 className="text-[10px] font-bold text-slate-200 uppercase tracking-wider">
+                  Flexible BLE / iTAG Hardware Button Triggers
+                </h4>
+              </div>
+              <p className="text-[8px] text-slate-500 mt-0.5">
+                Assign any emergency, check-in, GPS, AI voice, or stealth action to 1x, 2x, 3x, 4x clicks and Long Hold.
+              </p>
+            </div>
+            <div className="flex items-center gap-2">
+              <span className={`text-[7.5px] px-2 py-0.5 rounded-full font-bold uppercase ${
+                bleDevices.some(d => d.connectionState === 'CONNECTED')
+                  ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/30'
+                  : 'bg-slate-900 text-slate-500 border border-slate-800'
+              }`}>
+                {bleDevices.filter(d => d.connectionState === 'CONNECTED').length} Hardware Linked
+              </span>
+            </div>
+          </div>
+
+          {/* 1-Tap Role Presets */}
+          <div className="space-y-1.5">
+            <span className="text-[8px] font-bold text-slate-400 uppercase tracking-wider block">
+              Quick Behavior Presets:
+            </span>
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+              {[
+                {
+                  name: 'Everyday Safety',
+                  desc: '1x SOS · 2x Ring · 3x Walk · Hold Stealth',
+                  cfg: { singlePressAction: 'PANIC' as BleButtonAction, doublePressAction: 'FIND_PHONE' as BleButtonAction, triplePressAction: 'SAFETY_TIMEOUT' as BleButtonAction, quadPressAction: 'VOICE_LIZZY' as BleButtonAction, longPressAction: 'SILENT_PANIC' as BleButtonAction, cancelDuringCountdown: true, countdownOverrideSec: 10, multiPressWindowMs: 550 }
+                },
+                {
+                  name: 'Pocket-Safe 2x',
+                  desc: '1x Off · 2x SOS · 3x Safe · Hold Instant',
+                  cfg: { singlePressAction: 'DISABLED' as BleButtonAction, doublePressAction: 'PANIC' as BleButtonAction, triplePressAction: 'CHECK_IN_SAFE' as BleButtonAction, quadPressAction: 'SHARE_GPS_PING' as BleButtonAction, longPressAction: 'INSTANT_PANIC' as BleButtonAction, cancelDuringCountdown: true, countdownOverrideSec: 10, multiPressWindowMs: 650 }
+                },
+                {
+                  name: 'Lone Worker',
+                  desc: '1x Safe · 2x GPS · 3x Walk · Hold Instant',
+                  cfg: { singlePressAction: 'CHECK_IN_SAFE' as BleButtonAction, doublePressAction: 'SHARE_GPS_PING' as BleButtonAction, triplePressAction: 'SAFETY_TIMEOUT' as BleButtonAction, quadPressAction: 'VOICE_LIZZY' as BleButtonAction, longPressAction: 'INSTANT_PANIC' as BleButtonAction, cancelDuringCountdown: true, countdownOverrideSec: 5, multiPressWindowMs: 600 }
+                },
+                {
+                  name: 'Covert Stealth',
+                  desc: '1x Silent · 2x GPS · 3x Cancel · Hold Silent',
+                  cfg: { singlePressAction: 'SILENT_PANIC' as BleButtonAction, doublePressAction: 'SHARE_GPS_PING' as BleButtonAction, triplePressAction: 'CANCEL' as BleButtonAction, quadPressAction: 'VOICE_LIZZY' as BleButtonAction, longPressAction: 'SILENT_PANIC' as BleButtonAction, cancelDuringCountdown: true, countdownOverrideSec: 0, multiPressWindowMs: 550 }
+                },
+              ].map((preset) => (
+                <button
+                  key={preset.name}
+                  type="button"
+                  onClick={() => {
+                    setBleButtonConfig(preset.cfg);
+                    useAppStore.getState().addToast(`Applied iTAG preset: ${preset.name}`, 'success');
+                  }}
+                  className="p-2.5 rounded-xl bg-slate-900/50 hover:bg-slate-800/80 border border-slate-800 hover:border-cyan-500/40 text-left transition-all"
+                >
+                  <div className="text-[8.5px] font-black text-cyan-300 uppercase">{preset.name}</div>
+                  <div className="text-[7px] text-slate-400 mt-0.5 leading-snug">{preset.desc}</div>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Flexible Press Bindings Grid */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            {/* 1 Press Action */}
+            <div className="space-y-1 bg-slate-900/40 border border-slate-900/80 p-3 rounded-xl">
+              <label className="text-[8.5px] font-bold text-slate-300 uppercase flex items-center justify-between">
+                <span>1x Press (Single Click)</span>
+                <span className="text-red-400 font-extrabold text-[7.5px]">PRIMARY</span>
+              </label>
+              <select
+                value={bleButtonConfig.singlePressAction}
+                onChange={e => setBleButtonConfig({ singlePressAction: e.target.value as BleButtonAction })}
+                className="w-full bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-1.5 text-[9.5px] text-slate-200 focus:outline-none focus:border-cyan-500/50"
+              >
+                {BLE_ACTION_OPTIONS.map(opt => (
+                  <option key={opt.value} value={opt.value}>{opt.label}</option>
+                ))}
+              </select>
+            </div>
+
+            {/* 2 Presses Action */}
+            <div className="space-y-1 bg-slate-900/40 border border-slate-900/80 p-3 rounded-xl">
+              <label className="text-[8.5px] font-bold text-slate-300 uppercase flex items-center justify-between">
+                <span>2x Presses (Double Click)</span>
+                <span className="text-cyan-400 font-extrabold text-[7.5px]">SECONDARY</span>
+              </label>
+              <select
+                value={bleButtonConfig.doublePressAction}
+                onChange={e => setBleButtonConfig({ doublePressAction: e.target.value as BleButtonAction })}
+                className="w-full bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-1.5 text-[9.5px] text-slate-200 focus:outline-none focus:border-cyan-500/50"
+              >
+                {BLE_ACTION_OPTIONS.map(opt => (
+                  <option key={opt.value} value={opt.value}>{opt.label}</option>
+                ))}
+              </select>
+            </div>
+
+            {/* 3 Presses Action */}
+            <div className="space-y-1 bg-slate-900/40 border border-slate-900/80 p-3 rounded-xl">
+              <label className="text-[8.5px] font-bold text-slate-300 uppercase flex items-center justify-between">
+                <span>3x Presses (Triple Click)</span>
+                <span className="text-amber-400 font-extrabold text-[7.5px]">TERTIARY</span>
+              </label>
+              <select
+                value={bleButtonConfig.triplePressAction}
+                onChange={e => setBleButtonConfig({ triplePressAction: e.target.value as BleButtonAction })}
+                className="w-full bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-1.5 text-[9.5px] text-slate-200 focus:outline-none focus:border-cyan-500/50"
+              >
+                {BLE_ACTION_OPTIONS.map(opt => (
+                  <option key={opt.value} value={opt.value}>{opt.label}</option>
+                ))}
+              </select>
+            </div>
+
+            {/* 4 Presses Action */}
+            <div className="space-y-1 bg-slate-900/40 border border-slate-900/80 p-3 rounded-xl">
+              <label className="text-[8.5px] font-bold text-slate-300 uppercase flex items-center justify-between">
+                <span>4x Rapid Presses</span>
+                <span className="text-purple-400 font-extrabold text-[7.5px]">CUSTOM</span>
+              </label>
+              <select
+                value={bleButtonConfig.quadPressAction || 'VOICE_LIZZY'}
+                onChange={e => setBleButtonConfig({ quadPressAction: e.target.value as BleButtonAction })}
+                className="w-full bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-1.5 text-[9.5px] text-slate-200 focus:outline-none focus:border-cyan-500/50"
+              >
+                {BLE_ACTION_OPTIONS.map(opt => (
+                  <option key={opt.value} value={opt.value}>{opt.label}</option>
+                ))}
+              </select>
+            </div>
+
+            {/* Long Hold Action */}
+            <div className="space-y-1 bg-slate-900/40 border border-slate-900/80 p-3 rounded-xl">
+              <label className="text-[8.5px] font-bold text-slate-300 uppercase flex items-center justify-between">
+                <span>Long Hold (2+ Sec Press)</span>
+                <span className="text-emerald-400 font-extrabold text-[7.5px]">HOLD GESTURE</span>
+              </label>
+              <select
+                value={bleButtonConfig.longPressAction || 'SILENT_PANIC'}
+                onChange={e => setBleButtonConfig({ longPressAction: e.target.value as BleButtonAction })}
+                className="w-full bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-1.5 text-[9.5px] text-slate-200 focus:outline-none focus:border-cyan-500/50"
+              >
+                {BLE_ACTION_OPTIONS.map(opt => (
+                  <option key={opt.value} value={opt.value}>{opt.label}</option>
+                ))}
+              </select>
+            </div>
+
+            {/* Multi-Tap Detection Timing Window */}
+            <div className="space-y-1 bg-slate-900/40 border border-slate-900/80 p-3 rounded-xl">
+              <label className="text-[8.5px] font-bold text-slate-300 uppercase block">
+                Multi-Tap Timing Window
+              </label>
+              <select
+                value={bleButtonConfig.multiPressWindowMs || 550}
+                onChange={e => setBleButtonConfig({ multiPressWindowMs: Number(e.target.value) })}
+                className="w-full bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-1.5 text-[9.5px] text-slate-200 focus:outline-none focus:border-cyan-500/50"
+              >
+                <option value={350}>350ms — Fast / Snappy</option>
+                <option value={480}>480ms — Balanced</option>
+                <option value={550}>550ms — Standard (Recommended)</option>
+                <option value={700}>700ms — Relaxed</option>
+                <option value={900}>900ms — Accessible / Slow Tap</option>
+              </select>
+            </div>
+
+            {/* SOS Countdown Duration for iTAG */}
+            <div className="space-y-1 bg-slate-900/40 border border-slate-900/80 p-3 rounded-xl">
+              <label className="text-[8.5px] font-bold text-slate-300 uppercase block">
+                iTAG SOS Countdown Duration
+              </label>
+              <select
+                value={bleButtonConfig.countdownOverrideSec ?? 10}
+                onChange={e => setBleButtonConfig({ countdownOverrideSec: Number(e.target.value) })}
+                className="w-full bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-1.5 text-[9.5px] text-slate-200 focus:outline-none focus:border-cyan-500/50"
+              >
+                <option value={0}>0s — Instant Immediate Dispatch</option>
+                <option value={5}>5 Seconds</option>
+                <option value={10}>10 Seconds [Default]</option>
+                <option value={15}>15 Seconds</option>
+              </select>
+            </div>
+
+            {/* Safety Timeout Duration */}
+            <div className="space-y-1 bg-slate-900/40 border border-slate-900/80 p-3 rounded-xl">
+              <label className="text-[8.5px] font-bold text-slate-300 uppercase block">
+                Safety Walk Timer Duration
+              </label>
+              <select
+                value={bleButtonConfig.safetyTimeoutMinutes}
+                onChange={e => setBleButtonConfig({ safetyTimeoutMinutes: Number(e.target.value) })}
+                className="w-full bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-1.5 text-[9.5px] text-slate-200 focus:outline-none focus:border-cyan-500/50"
+              >
+                <option value={5}>5 Minutes (Quick transit)</option>
+                <option value={10}>10 Minutes (Short commute)</option>
+                <option value={15}>15 Minutes [Default]</option>
+                <option value={30}>30 Minutes (Extended walk)</option>
+                <option value={60}>60 Minutes (Night shift / Lone worker)</option>
+              </select>
+            </div>
+
+            {/* Countdown Cancel Toggle */}
+            <div className="space-y-1 bg-slate-900/40 border border-slate-900/80 p-3 rounded-xl">
+              <div className="flex items-center justify-between">
+                <label className="text-[8.5px] font-bold text-slate-300 uppercase">
+                  Press During Countdown
+                </label>
+                <label className="flex items-center space-x-1.5 cursor-pointer">
+                  <span className={`text-[7.5px] font-bold ${bleButtonConfig.cancelDuringCountdown ? 'text-emerald-400' : 'text-slate-600'}`}>
+                    {bleButtonConfig.cancelDuringCountdown ? 'DISARM' : 'IGNORE'}
+                  </span>
+                  <input
+                    type="checkbox"
+                    checked={bleButtonConfig.cancelDuringCountdown}
+                    onChange={e => setBleButtonConfig({ cancelDuringCountdown: e.target.checked })}
+                    className="accent-emerald-500 w-3.5 h-3.5 cursor-pointer"
+                  />
+                </label>
+              </div>
+              <p className="text-[7.5px] text-slate-500 mt-1">
+                Pressing your iTAG again while countdown is ticking immediately aborts dispatch from your pocket.
+              </p>
+            </div>
+
+            {/* Haptic Feedback Toggle */}
+            <div className="space-y-1 bg-slate-900/40 border border-slate-900/80 p-3 rounded-xl">
+              <div className="flex items-center justify-between">
+                <label className="text-[8.5px] font-bold text-slate-300 uppercase">
+                  Pocket Haptic Feedback
+                </label>
+                <label className="flex items-center space-x-1.5 cursor-pointer">
+                  <span className={`text-[7.5px] font-bold ${bleButtonConfig.hapticFeedback ? 'text-cyan-400' : 'text-slate-600'}`}>
+                    {bleButtonConfig.hapticFeedback ? 'ENABLED' : 'OFF'}
+                  </span>
+                  <input
+                    type="checkbox"
+                    checked={bleButtonConfig.hapticFeedback}
+                    onChange={e => setBleButtonConfig({ hapticFeedback: e.target.checked })}
+                    className="accent-cyan-500 w-3.5 h-3.5 cursor-pointer"
+                  />
+                </label>
+              </div>
+              <p className="text-[7.5px] text-slate-500 mt-1">
+                Distinct vibration patterns confirm every pocket press without looking at your screen.
+              </p>
+            </div>
+          </div>
+
+          {/* Interactive Hardware Click & Hold Pattern Simulator */}
+          <div className="p-3 bg-cyan-950/20 border border-cyan-900/30 rounded-xl flex flex-col sm:flex-row items-center justify-between gap-3">
+            <div className="space-y-0.5 text-center sm:text-left">
+              <span className="text-[8.5px] font-bold text-cyan-400 uppercase block">
+                🧪 Test Your iTAG Gestures Live
+              </span>
+              <p className="text-[7.5px] text-slate-400">
+                Tap 1x, 2x, 3x, or 4x within {bleButtonConfig.multiPressWindowMs || 550}ms, or test Long Hold right here.
+              </p>
+            </div>
+            <div className="flex items-center gap-2 shrink-0">
+              <button
+                type="button"
+                onClick={() => {
+                  setTestClicks(prev => prev + 1);
+                  handleHardwareButtonPress('SETTINGS_SIMULATOR');
+                  setTimeout(() => setTestClicks(0), (bleButtonConfig.multiPressWindowMs || 550) + 500);
+                }}
+                className="px-3.5 py-2 bg-gradient-to-r from-cyan-600 to-blue-600 hover:from-cyan-500 hover:to-blue-500 text-white font-mono font-bold text-[9px] uppercase tracking-wider rounded-xl transition-all shadow-md active:scale-95 flex items-center gap-1.5"
+              >
+                <span>🔘 Tap (1x–4x)</span>
+                {testClicks > 0 && (
+                  <span className="px-1.5 py-0.2 bg-white/20 rounded-md text-[8px] animate-pulse">
+                    {testClicks}x
+                  </span>
+                )}
+              </button>
+              <button
+                type="button"
+                onClick={() => handleHardwareButtonPress('LONG_PRESS:SETTINGS_SIMULATOR')}
+                className="px-3 py-2 bg-emerald-600/25 hover:bg-emerald-600/40 border border-emerald-500/40 text-emerald-300 font-mono font-bold text-[9px] uppercase tracking-wider rounded-xl transition-all active:scale-95"
+              >
+                ✋ Hold
+              </button>
+            </div>
+          </div>
+        </div>
+        )}
+
+        {/* Security PINs & Unlock Choice Section */}
+        {currentUser && showBlock('SECURITY', 'security pin safe pin duress pin account password biometric face id unlock') && (
+          <div className="space-y-3 border-t border-slate-900/60 pt-4 mt-4 text-left relative z-10">
+            <div className="flex items-center justify-between">
+              <h4 className="text-[9px] font-bold text-slate-500 uppercase tracking-widest font-display">
+                🔒 SECURITY &amp; UNLOCK CHOICE
+              </h4>
+              {hasBiometrics && isPinSettingsUnlocked && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsPinSettingsUnlocked(false);
+                    biometricService.lockScope('settings');
+                    useAppStore.getState().addToast('Security PIN settings locked.', 'info');
+                  }}
+                  className="text-[8px] font-mono font-bold text-slate-400 hover:text-slate-200 px-2 py-0.5 bg-slate-900 border border-slate-800 rounded-lg uppercase transition-all"
+                >
+                  🔒 Lock
+                </button>
+              )}
+            </div>
+
+            {hasBiometrics && !isPinSettingsUnlocked ? (
+              <div className="bg-slate-950/50 border border-slate-800/80 rounded-2xl p-5 text-center space-y-3 font-mono">
+                <div className="w-10 h-10 mx-auto rounded-full bg-purple-500/10 border border-purple-500/20 flex items-center justify-center text-lg">
+                  {biometryType === 'FACE_ID' ? '👤' : '👆'}
+                </div>
+                <div>
+                  <h5 className="text-[10px] font-bold text-slate-200 uppercase tracking-wider">
+                    Biometric Protection Active
+                  </h5>
+                  <p className="text-[8px] text-slate-500 mt-1 max-w-xs mx-auto">
+                    Authentication is required to view or modify your Safe PIN, Duress PIN, and account credentials.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={handleUnlockPinSettings}
+                  disabled={isAuthenticatingPin}
+                  className="w-full py-2.5 bg-purple-600 hover:bg-purple-500 text-white font-mono text-[9.5px] font-bold uppercase tracking-wider rounded-xl transition-all shadow-lg flex items-center justify-center gap-2"
+                >
+                  <span>{biometryType === 'FACE_ID' ? '👤' : '👆'}</span>
+                  <span>{isAuthenticatingPin ? 'Verifying...' : `Authenticate with ${biometryType === 'FACE_ID' ? 'Face ID' : 'Biometrics'}`}</span>
+                </button>
+              </div>
+            ) : (
+              <div className="bg-slate-950/30 border border-slate-900 rounded-2xl p-4 space-y-3 font-mono">
+                <div className="space-y-1">
+                  
+                  <div className="pt-2 pb-3 border-b border-slate-900/60 mb-2">
+                    <label className="text-[9px] font-bold text-slate-400 block uppercase mb-1">Account Password</label>
+                    <div className="flex gap-2">
+                      <input
+                        type="password"
+                        placeholder="New Password"
+                        value={newPassword}
+                        onChange={(e) => setNewPassword(e.target.value)}
+                        className="w-full bg-slate-950 border border-slate-900 rounded-xl px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-purple-500/50"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const newPwd = newPassword;
+                          if (!newPwd) return useAppStore.getState().addToast('Password cannot be empty', 'warn');
+                          if (currentUser) {
+                             useAppStore.getState().updateUserPassword(currentUser.id, newPwd);
+                             useAppStore.getState().addToast('Account password updated successfully.', 'success');
+                             setNewPassword('');
+                             (document.getElementById('newAccountPassword') as HTMLInputElement).value = '';
+                          }
+                        }}
+                        className="bg-blue-600 hover:bg-blue-500 text-white text-[10px] font-bold uppercase px-3 rounded-xl border border-blue-500/20 whitespace-nowrap"
+                      >
+                        Update
+                      </button>
+                    </div>
+                    <p className="text-[8px] text-slate-500 mt-1">Change your login password (active in demo mode).</p>
+                  </div>
+                  
+                  <label className="text-[9px] font-bold text-slate-400 block uppercase">Safe PIN (Cancels Alert)</label>
+                  <input
+                    type="password"
+                    value={userPin}
+                    onChange={(e) => useAppStore.getState().setUserPin(e.target.value)}
+                    className="w-full bg-slate-950 border border-slate-900 rounded-xl px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-purple-500/50"
+                    maxLength={4}
+                    placeholder="e.g. 0000"
+                  />
+                  <p className="text-[7.5px] text-slate-500 mt-1">Used to safely cancel an accidental panic trigger.</p>
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-[9px] font-bold text-slate-400 block uppercase text-red-500/80">Duress PIN (Silent Escalation)</label>
+                  <input
+                    type="password"
+                    value={duressPin}
+                    onChange={(e) => useAppStore.getState().setDuressPin(e.target.value)}
+                    className="w-full bg-slate-950 border border-red-900/30 rounded-xl px-3 py-2 text-xs text-red-200 focus:outline-none focus:border-red-500/50"
+                    maxLength={4}
+                    placeholder="e.g. 9999"
+                  />
+                  <p className="text-[7.5px] text-slate-500 mt-1">If forced to cancel by an attacker, enter this to appear like you canceled, but silently escalate to Police.</p>
+                </div>
+
+                {/* Preferred Emergency Unlock Choice */}
+                <div className="space-y-1.5 pt-2 border-t border-slate-900/60">
+                  <label className="text-[9px] font-bold text-slate-400 block uppercase">Primary Unlock Choice</label>
+                  <div className="grid grid-cols-3 gap-2">
+                    {([
+                      { id: 'BIOMETRIC', label: 'Biometric / Passcode' },
+                      { id: 'PIN', label: 'SafetyLink PIN' },
+                      { id: 'DURESS', label: 'Duress Priority' }
+                    ] as const).map(opt => (
+                      <button
+                        key={opt.id}
+                        type="button"
+                        onClick={() => {
+                          setUnlockMethod(opt.id);
+                          useAppStore.getState().addToast(`Unlock preference set to ${opt.label}.`, 'success');
+                        }}
+                        className={`p-2 rounded-xl border text-[8px] font-bold uppercase transition-all ${
+                          unlockMethod === opt.id
+                            ? 'bg-emerald-600/20 border-emerald-500 text-emerald-300'
+                            : 'bg-slate-950 border-slate-800 text-slate-400 hover:border-slate-700'
+                        }`}
+                      >
+                        {opt.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Join Organization Workflow Section */}
+        {currentUser && showBlock('CONTACTS', 'campus security organization hub org id join membership role control room') && (
+          <div className="space-y-3 border-t border-slate-900/60 pt-4 mt-4 text-left relative z-10">
+            <h4 className="text-[9px] font-bold text-slate-500 uppercase tracking-widest font-display">
+              🏢 CAMPUS / SECURITY ORGANIZATION HUB
+            </h4>
+            <div className="bg-slate-950/30 border border-slate-900 rounded-2xl p-4 space-y-3">
+              
+              {/* Scenario 1: Already has approved Organization */}
+              {currentUser.orgCode ? (() => {
+                const boundOrg = organizations.find(o => o.id === currentUser.orgCode);
+                return (
+                  <div className="space-y-2 text-left">
+                    <span className="text-[9.5px] text-emerald-400 font-bold block flex items-center gap-1">
+                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                      ACTIVE ORG CONNECTION: {currentUser.orgCode}
+                    </span>
+                    <p className="text-[9px] text-slate-400 font-sans leading-normal">
+                      Your profile is securely bound to the organization <strong>{boundOrg?.name || 'Authorized Responders Network'}</strong>. Alert dispatches are shared with the organization's central control room console in real time.
+                    </p>
+                    
+            
+
+                                  <button
+                      type="button"
+                      onClick={() => {
+                        updateUserProfile(currentUser.id, { orgCode: '', pendingOrgCode: '' });
+                        useAppStore.getState().addToast("Successfully disconnected from organization.", "info");
+                        useAppStore.getState().addAuditLog('SECURITY', 'WARN', 'Organization Disconnected', `User disconnected from organization ${currentUser.orgCode}`);
+                      }}
+                      className="w-full py-1.5 bg-red-950/20 hover:bg-red-950/40 border border-red-500/20 rounded-xl text-[8.5px] font-bold text-red-400 uppercase tracking-wider text-center cursor-pointer"
+                    >
+                      🔌 Leave Organization Connection
+                    </button>
+                  </div>
+                );
+              })() : currentUser.pendingOrgCode ? (() => {
+                const pendingOrg = organizations.find(o => o.id === currentUser.pendingOrgCode);
+                return (
+                  <div className="space-y-2 text-left">
+                    <span className="text-[9.5px] text-amber-400 font-bold block flex items-center gap-1 animate-pulse">
+                      <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
+                      MEMBERSHIP REQUEST PENDING
+                    </span>
+                    <p className="text-[9px] text-slate-400 font-sans leading-normal">
+                      You requested to join <strong>{pendingOrg?.name || currentUser.pendingOrgCode}</strong>. Requests require supervisor approval inside the Safety Node Commander Deck.
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        updateUserProfile(currentUser.id, { pendingOrgCode: '' });
+                        useAppStore.getState().addToast("Organization join request cancelled.", "info");
+                      }}
+                      className="w-full py-1.5 bg-slate-900 hover:bg-slate-800 border border-slate-800 rounded-xl text-[8.5px] font-bold text-slate-300 uppercase tracking-wider text-center cursor-pointer"
+                    >
+                      ❌ Cancel Membership Request
+                    </button>
+                  </div>
+                );
+              })() : (
+                // Scenario 3: No connection, can type orgCode
+                <div className="space-y-3">
+                  <span className="text-[9.5px] text-slate-400 block font-sans leading-normal">
+                    Type a unique Campus or Patrol Org ID to synchronize distress streams with a local security team, supervisor, or public emergency patrol.
+                  </span>
+                  
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="space-y-1">
+                      <label className="text-[8px] font-bold text-slate-500 uppercase tracking-wider block">Organization ID</label>
+                      <input
+                        type="text"
+                        value={orgIdInput}
+                        onChange={(e) => setOrgIdInput(e.target.value)}
+                        className="w-full bg-slate-950 border border-slate-900 rounded-xl px-3 py-2 text-[10px] text-slate-200 uppercase focus:outline-none focus:border-purple-500/50 font-mono"
+                        placeholder="e.g. SL-ORG-001"
+                      />
+                    </div>
+
+                    <div className="space-y-1">
+                      <label className="text-[8px] font-bold text-slate-500 uppercase tracking-wider block">Select Your Role</label>
+                      <select
+                        value={selectedJoinRole}
+                        onChange={(e) => setSelectedJoinRole(e.target.value)}
+                        className="w-full bg-slate-950 border border-slate-900 rounded-xl px-2 py-2 text-[10px] text-slate-200 focus:outline-none focus:border-purple-500/50 font-mono"
+                      >
+                        <option value="Community Member">Community Member</option>
+                        <option value="Guard">Guard</option>
+                        <option value="Dispatcher">Dispatcher</option>
+                        <option value="Control Room Operator">Control Room Operator</option>
+                        <option value="Organization Administrator">Organization Administrator</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (!orgIdInput.trim()) {
+                        useAppStore.getState().addToast("Please enter an Organization ID code.", "warn");
+                        return;
+                      }
+                      const res = requestJoinOrganization(currentUser.id, orgIdInput.toUpperCase().trim(), selectedJoinRole);
+                      if (res.success) {
+                        useAppStore.getState().addToast(`Membership request as ${selectedJoinRole} submitted! Waiting for admin approval.`, "success");
+                        setOrgIdInput('');
+                      } else {
+                        useAppStore.getState().addToast(res.error || "Failed to submit membership request.", "error");
+                      }
+                    }}
+                    className="w-full py-2 bg-blue-900/20 hover:bg-blue-900/40 border border-blue-500/30 rounded-xl text-[9px] font-bold text-blue-300 uppercase tracking-wider text-center cursor-pointer font-mono"
+                  >
+                    🚀 Submit Membership Request
+                  </button>
+
+                  <div className="bg-slate-950/60 p-2 rounded-lg border border-slate-900/50 text-[7.5px] text-slate-500 space-y-1 font-mono">
+                    <p className="font-bold uppercase tracking-wider text-slate-400 text-center">💡 SIMULATOR CODE DIRECTORY</p>
+                    <p className="flex justify-between"><span>🏫 School Roster Node:</span> <span className="text-blue-400 font-bold">SL-ORG-001</span></p>
+                    <p className="flex justify-between"><span>🚨 Security Patrol Escort:</span> <span className="text-blue-400 font-bold">SL-ORG-002</span></p>
+                    <p className="flex justify-between"><span>🏭 Corporate Safe-zone:</span> <span className="text-blue-400 font-bold">SL-ORG-003</span></p>
+                  </div>
+                </div>
+              )}
+
+            </div>
+          </div>
+        )}
+
+        {/* User Dedicated Gateway & Personal Twilio Telephony Configuration */}
+        {currentUser && showBlock('ADVANCED', 'cellular twilio gateway credentials account sid auth token sender phone number') && (
+          <div className="space-y-3 border-t border-slate-900/60 pt-4 mt-4 text-left relative z-10">
+            <div className="flex items-center justify-between">
+              <h4 className="text-[9px] font-bold text-slate-500 uppercase tracking-widest font-display">
+                📡 CELLULAR & TWILIO GATEWAY CREDENTIALS
+              </h4>
+              <span className={`text-[8px] font-mono px-2 py-0.5 rounded-full border ${
+                currentUser.canUseAdminTwilio
+                  ? 'bg-emerald-950/40 border-emerald-500/30 text-emerald-400'
+                  : 'bg-slate-900 border-slate-800 text-slate-400'
+              }`}>
+                {currentUser.canUseAdminTwilio ? 'ADMIN POOL AUTHORIZED' : 'OWN ACCOUNT MODE'}
+              </span>
+            </div>
+
+            <div className="bg-slate-950/40 border border-slate-900 rounded-2xl p-4 space-y-3 text-left font-mono">
+              {currentUser.canUseAdminTwilio ? (
+                <div className="p-3 bg-emerald-950/20 border border-emerald-500/20 rounded-xl space-y-1">
+                  <span className="text-[9px] font-bold text-emerald-400 block flex items-center gap-1.5">
+                    <span>✅</span> SYSTEM ADMIN SENDER POOL ACTIVE
+                  </span>
+                  <p className="text-[8.5px] text-slate-400 font-sans leading-relaxed">
+                    The Super Administrator has authorized your account to route emergency SMS & Voice alerts through the central SafetyLink dispatch line. You do not need your own Twilio balance.
+                  </p>
+                </div>
+              ) : (
+                <div className="p-3 bg-amber-950/20 border border-amber-500/20 rounded-xl space-y-1">
+                  <span className="text-[9px] font-bold text-amber-400 block flex items-center gap-1.5">
+                    <span>🛡️</span> PRIVATE TWILIO ACCOUNT REQUIRED
+                  </span>
+                  <p className="text-[8.5px] text-slate-400 font-sans leading-relaxed">
+                    To protect shared balance reserves, non-delegated emergency alerts and testing require your own Twilio SID & Token, or standard GSM SMS on device. Enter your private credentials below.
+                  </p>
+                </div>
+              )}
+
+              <div className="space-y-2 pt-1">
+                <div className="space-y-1">
+                  <label className="text-[8px] font-bold text-slate-400 uppercase tracking-wider block">
+                    My Twilio Account SID
+                  </label>
+                  <input
+                    type="text"
+                    value={currentUser.customTwilioConfig?.accountSid || ''}
+                    onChange={(e) => {
+                      updateUserProfile(currentUser.id, {
+                        customTwilioConfig: {
+                          ...currentUser.customTwilioConfig,
+                          accountSid: e.target.value.trim()
+                        }
+                      });
+                    }}
+                    placeholder="AC_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+                    className="w-full bg-slate-950 border border-slate-850 rounded-xl px-3 py-2 text-[10px] text-slate-200 focus:outline-none focus:border-amber-500/50"
+                  />
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-[8px] font-bold text-slate-400 uppercase tracking-wider block">
+                    My Twilio Auth Token
+                  </label>
+                  <input
+                    type="password"
+                    value={currentUser.customTwilioConfig?.authToken || ''}
+                    onChange={(e) => {
+                      updateUserProfile(currentUser.id, {
+                        customTwilioConfig: {
+                          ...currentUser.customTwilioConfig,
+                          authToken: e.target.value.trim()
+                        }
+                      });
+                    }}
+                    placeholder="••••••••••••••••••••••••••••••••"
+                    className="w-full bg-slate-950 border border-slate-850 rounded-xl px-3 py-2 text-[10px] text-slate-200 focus:outline-none focus:border-amber-500/50"
+                  />
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-[8px] font-bold text-slate-400 uppercase tracking-wider block">
+                    My Twilio Phone Number (Sender)
+                  </label>
+                  <input
+                    type="text"
+                    value={currentUser.customTwilioConfig?.phoneNumber || ''}
+                    onChange={(e) => {
+                      updateUserProfile(currentUser.id, {
+                        customTwilioConfig: {
+                          ...currentUser.customTwilioConfig,
+                          phoneNumber: e.target.value.trim()
+                        }
+                      });
+                    }}
+                    placeholder="+1 (xxx) xxx-xxxx"
+                    className="w-full bg-slate-950 border border-slate-850 rounded-xl px-3 py-2 text-[10px] text-slate-200 focus:outline-none focus:border-amber-500/50"
+                  />
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    useAppStore.getState().addToast('Personal Twilio configuration saved.', 'success');
+                    useAppStore.getState().addAuditLog('SYSTEM', 'INFO', 'User updated custom Twilio config');
+                  }}
+                  className="w-full mt-1 py-2 bg-slate-900 hover:bg-slate-850 border border-slate-800 text-slate-300 hover:text-white rounded-xl text-[9px] font-bold uppercase tracking-wider transition-all"
+                >
+                  💾 Save My Gateway Configuration
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+      {/* Fleet, Camera, & Drone Integrations */}
+      {showBlock('HARDWARE', 'fleet tracking patrol vehicles hikvision onvif camera linking drone deployment 24hrsdroneforce') && (
+      <div className="space-y-4 text-left border-t border-slate-900 pt-4 mt-4 relative z-10 font-mono">
+        <h4 className="text-[9px] font-bold text-slate-500 font-display uppercase tracking-widest">
+          🚁 FLEET, CAMERA & DRONE MODULES
+        </h4>
+        <div className="space-y-3">
+          {/* Safety Fleet Tracking */}
+          <div className="bg-slate-950/40 border border-slate-900 rounded-2xl p-4 space-y-3">
+            <div className="flex items-center gap-2 mb-1 text-slate-200">
+              <span className="text-xl">🚙</span>
+              <span className="text-[11px] font-extrabold font-display uppercase tracking-wide">Safety Fleet Tracking</span>
+            </div>
+            <p className="text-[9px] text-slate-500 leading-normal font-sans">
+              Monitor active security patrol vehicles, live dispatch routes, and responder telemetry.
+            </p>
+            <button
+              onClick={() => useAppStore.getState().addToast("Safety Fleet Tracking module initiated. Awaiting GPS telemetrics from patrol cars...", "info")}
+              className="w-full py-2 bg-blue-900/30 hover:bg-blue-900/50 border border-blue-500/20 text-blue-400 text-[9px] font-bold rounded-xl transition-all uppercase tracking-wider"
+            >
+              Open Fleet Dashboard
+            </button>
+          </div>
+
+          {/* ONVIF / Hikvision Mobile Camera Onboarding */}
+          <div className="bg-slate-950/40 border border-slate-900 rounded-2xl p-4 space-y-3">
+            <div className="flex items-center justify-between gap-2 mb-1 text-slate-200">
+              <div className="flex items-center gap-2">
+                <span className="text-xl">📹</span>
+                <span className="text-[11px] font-extrabold font-display uppercase tracking-wide">Hikvision &amp; ONVIF Camera Linking</span>
+              </div>
+              <span className="text-[10px] font-mono text-emerald-400">
+                {useAppStore.getState().cameras.length} Linked
+              </span>
+            </div>
+            <p className="text-[9px] text-slate-500 leading-normal font-sans">
+              Deploy Hikvision, HiLook, or ONVIF cameras straight from your phone via QR / Serial (Hik-Connect P2P), Site Wi-Fi LAN ISAPI, or go2rtc Relay.
+            </p>
+            <button
+              type="button"
+              onClick={() => setShowHikvisionManager((v) => !v)}
+              className="w-full py-2 bg-emerald-900/30 hover:bg-emerald-900/50 border border-emerald-500/20 text-emerald-300 text-[9px] font-bold rounded-xl transition-all uppercase tracking-wider"
+            >
+              {showHikvisionManager ? 'Hide Camera Deployment Manager' : 'Open Phone Camera Deployment Manager'}
+            </button>
+            {showHikvisionManager && (
+              <div className="pt-3 border-t border-slate-800">
+                <HikvisionCameraManager scope="USER" compact />
+              </div>
+            )}
+          </div>
+
+          {/* Drone Deployment Environment */}
+          <div className="bg-slate-950/40 border border-slate-900 rounded-2xl p-4 space-y-3">
+            <div className="flex items-center gap-2 mb-1 text-slate-200">
+              <span className="text-xl">🛸</span>
+              <span className="text-[11px] font-extrabold font-display uppercase tracking-wide">Drone Deployment Config</span>
+            </div>
+            <p className="text-[9px] text-slate-500 leading-normal font-sans">
+              Configure external drone dispatch services (e.g., 24hrsdroneforce). Enable automated launch on distress triggers.
+            </p>
+            <div className="space-y-2 pt-2 border-t border-slate-900/50">
+              <div className="space-y-1">
+                <label className="text-[8px] font-bold text-slate-500 uppercase tracking-wider block">Drone Provider API Key</label>
+                <input
+                  type="password"
+                  placeholder="Enter Dispatch API Key"
+                  className="w-full bg-slate-950 border border-slate-900 rounded-xl px-3 py-2 text-[10px] text-slate-200 focus:outline-none focus:border-orange-500/50"
+                />
+              </div>
+              <div className="space-y-1">
+                <label className="text-[8px] font-bold text-slate-500 uppercase tracking-wider block">Default Service Target</label>
+                <select className="w-full bg-slate-950 border border-slate-900 rounded-xl px-2 py-2 text-[10px] text-slate-200 focus:outline-none focus:border-orange-500/50">
+                  <option value="24hrsdroneforce">24hrsdroneforce (Recommended)</option>
+                  <option value="custom">Custom Provider Endpoint</option>
+                </select>
+              </div>
+              <button
+                onClick={() => useAppStore.getState().addToast("Drone provider settings saved. Ready for aerial deployment requests.", "success")}
+                className="w-full mt-2 py-2 bg-orange-900/30 hover:bg-orange-900/50 border border-orange-500/20 text-orange-400 text-[9px] font-bold rounded-xl transition-all uppercase tracking-wider"
+              >
+                Save Drone Config
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+      )}
+
+      {/* System Updates Section */}
+      {showBlock('ADVANCED', 'system updates ota over the air apk upgrade build version') && (
+      <div className="space-y-3 text-left border-t border-slate-900 pt-4 mt-4 relative z-10">
+        <div className="flex justify-between items-center">
+          <h4 className="text-[9px] font-bold text-slate-500 font-display uppercase tracking-widest">
+            System Updates
+          </h4>
+          <span className="text-[9px] font-mono font-bold text-emerald-400 bg-emerald-950/30 px-2 py-0.5 rounded-full border border-emerald-500/20">
+            v1.0.0 (Latest)
+          </span>
+        </div>
+        <div className="bg-slate-950 border border-slate-900 rounded-2xl p-3.5 flex items-center justify-between gap-4">
+          <div className="flex-1">
+            <p className="text-[10px] font-bold text-slate-200">Over-the-Air Update</p>
+            <p className="text-[8px] text-slate-500 font-mono mt-0.5">Fetch and install the latest SafetyLink core APK directly from our secure repository.</p>
+          </div>
+          <button
+            onClick={handleCheckForUpdates}
+            disabled={isCheckingUpdate}
+            className={`shrink-0 flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl text-[9px] font-bold uppercase tracking-wider font-mono transition-all ${
+              isCheckingUpdate 
+                ? 'bg-slate-900 text-slate-500 cursor-not-allowed' 
+                : 'bg-emerald-600 hover:bg-emerald-500 text-white shadow-lg shadow-emerald-500/20'
+            }`}
+          >
+            {isCheckingUpdate ? (
+              <span className="flex items-center gap-1.5">
+                <span className="w-3 h-3 border-2 border-slate-500 border-t-transparent rounded-full animate-spin" />
+                Checking...
+              </span>
+            ) : (
+              <span className="flex items-center gap-1.5">
+                <span>⬇️</span> Upgrade Build
+              </span>
+            )}
+          </button>
+        </div>
+      </div>
+      )}
+
+      {/* Android Screen Wake, Lock-Screen Overlay & Battery Survival */}
+      {showBlock('SECURITY', 'lock screen overlay device survival screen wake battery optimization killer exemption app permissions setup wizard') && (
+      <div className="space-y-3 text-left border-t border-slate-900 pt-4 mt-4 relative z-10 font-mono">
+        <div className="flex justify-between items-center">
+          <h4 className="text-[9px] font-bold text-slate-500 font-display uppercase tracking-widest">
+            🛡️ LOCK-SCREEN OVERLAY &amp; DEVICE SURVIVAL
+          </h4>
+          <span className="text-[9px] font-mono font-bold text-emerald-400 bg-emerald-950/30 px-2 py-0.5 rounded-full border border-emerald-500/20">
+            {screenWakeLockEnabled ? 'LOCK-SCREEN READY' : 'STANDARD'}
+          </span>
+        </div>
+        <div className="bg-slate-950/60 border border-slate-900 rounded-2xl p-4 space-y-3">
+          <div className="flex items-center justify-between bg-slate-900/60 p-3 rounded-xl border border-slate-800">
+            <div>
+              <span className="text-[9.5px] font-bold text-slate-200 block uppercase">Screen Wake &amp; Display Over Lock Screen</span>
+              <span className="text-[8px] text-slate-400">Wakes screen and locks emergency countdown over lock screen until PIN verified.</span>
+            </div>
+            <input
+              type="checkbox"
+              checked={screenWakeLockEnabled}
+              onChange={(e) => {
+                const enabled = e.target.checked;
+                setScreenWakeLockEnabled(enabled);
+                try { localStorage.setItem('sl_screen_wake_lock', String(enabled)); } catch {}
+                useAppStore.getState().addToast(`Lock-screen wake overlay ${enabled ? 'enabled' : 'disabled'}.`, 'info');
+              }}
+              className="accent-emerald-500 w-4 h-4 cursor-pointer"
+            />
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 pt-1">
+            <button
+              type="button"
+              onClick={async () => {
+                if (typeof window !== 'undefined' && (window as any).Capacitor?.Plugins?.SafetyLinkEmergency?.requestBatteryOptimizationExemption) {
+                  await (window as any).Capacitor.Plugins.SafetyLinkEmergency.requestBatteryOptimizationExemption();
+                } else {
+                  useAppStore.getState().addToast('Battery exemption is available in the Android APK.', 'info');
+                }
+              }}
+              className="py-2.5 px-3 bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/30 text-emerald-400 rounded-xl text-[10px] font-bold flex items-center justify-center gap-2 transition-colors"
+            >
+              <span>⚡ Exempt Battery Killer</span>
+            </button>
+            <button
+              type="button"
+              onClick={async () => {
+                if (typeof window !== 'undefined' && (window as any).Capacitor?.Plugins?.SafetyLinkEmergency?.openAppSettings) {
+                  await (window as any).Capacitor.Plugins.SafetyLinkEmergency.openAppSettings();
+                } else {
+                  useAppStore.getState().addToast('App permissions manager is available in the Android APK.', 'info');
+                }
+              }}
+              className="py-2.5 px-3 bg-blue-500/10 hover:bg-blue-500/20 border border-blue-500/30 text-blue-300 rounded-xl text-[10px] font-bold flex items-center justify-center gap-2 transition-colors"
+            >
+              <span>⚙️ App Permissions</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                localStorage.removeItem('sl_permissions_configured_v2');
+                window.location.reload();
+              }}
+              className="py-2.5 px-3 bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300 rounded-xl text-[10px] font-bold flex items-center justify-center gap-2 transition-colors"
+            >
+              <span>🔄 Run Setup Wizard</span>
+            </button>
+          </div>
+        </div>
+      </div>
+      )}
+
+      {/* Cloudflare Private DNS Configuration */}
+      {showBlock('SECURITY', 'cloudflare private dns shield tls port 853 hostname') && (
+      <div className="space-y-3 text-left border-t border-slate-900 pt-4 mt-4 relative z-10 font-mono">
+        <div className="flex justify-between items-center">
+          <h4 className="text-[9px] font-bold text-slate-500 font-display uppercase tracking-widest">
+            🌐 CLOUDFLARE PRIVATE DNS SHIELD
+          </h4>
+          <span className="text-[9px] font-mono font-bold text-sky-400 bg-sky-950/30 px-2 py-0.5 rounded-full border border-sky-500/20">
+            TLS PORT 853
+          </span>
+        </div>
+        <div className="bg-slate-950/60 border border-slate-900 rounded-2xl p-4 space-y-3">
+          <div className="flex items-center justify-between bg-slate-900 border border-slate-800 rounded-xl p-2.5">
+            <div>
+              <span className="text-[8px] text-slate-500 uppercase tracking-widest block font-bold">Private DNS Provider Hostname</span>
+              <span className="text-xs font-bold text-emerald-400 font-mono">dns.safetylink.online</span>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                navigator.clipboard?.writeText('dns.safetylink.online');
+                useAppStore.getState().addToast('Copied dns.safetylink.online to clipboard', 'success');
+              }}
+              className="py-1 px-2.5 bg-emerald-500/20 hover:bg-emerald-500/30 border border-emerald-500/40 text-emerald-300 rounded-lg text-[10px] font-bold"
+            >
+              Copy
+            </button>
+          </div>
+          <p className="text-[9.5px] text-slate-400 font-sans leading-relaxed">
+            Android Settings → Network & Internet → Private DNS → select "Private DNS provider hostname" and enter <strong className="text-slate-200">dns.safetylink.online</strong>.
+          </p>
+        </div>
+      </div>
+      )}
+
+      {/* Interactive Audit Logs Ledger */}
+      {showBlock('ADVANCED', 'interactive audit logs ledger events system ble gps dispatch security') && (
+      <div className="space-y-3 text-left border-t border-slate-900 pt-4 mt-4 relative z-10">
+        <div className="flex justify-between items-center">
+          <h4 className="text-[9px] font-bold text-slate-500 font-display uppercase tracking-widest">
+            {t('settings.ledger_title')}
+          </h4>
+          <span className="text-[9px] font-mono font-bold text-slate-400 bg-slate-950 px-2 py-0.5 rounded-full border border-slate-900">
+            {filteredLogs.length} {t('settings.events_badge')}
+          </span>
+        </div>
+
+        {/* Filter Badges */}
+        <div className="flex flex-wrap gap-1.5 font-mono text-[8px] font-bold">
+          {(['ALL', 'SYSTEM', 'BLE', 'GPS', 'DISPATCH', 'SECURITY'] as const).map(cat => (
+            <button
+              key={cat}
+              onClick={() => setFilter(cat)}
+              className={`px-2.5 py-1 rounded-full border transition-all ${
+                filter === cat
+                  ? 'bg-blue-600 border-blue-500/20 text-white shadow-md'
+                  : 'bg-slate-950 border-slate-900 text-slate-500 hover:text-slate-300'
+              }`}
+            >
+              {cat}
+            </button>
+          ))}
+        </div>
+
+        {/* Audit Log Box */}
+        <div className="h-44 bg-slate-950/40 border border-slate-900 rounded-2xl overflow-y-auto p-3.5 font-mono text-[10px] space-y-3.5 scrollbar-none">
+          {filteredLogs.length === 0 ? (
+            <p className="text-slate-600 text-center py-10 italic">Ledger buffer empty.</p>
+          ) : (
+            filteredLogs.map(log => {
+              const dateStr = new Date(log.timestamp).toLocaleTimeString();
+              const isSevere = log.severity === 'SEVERE';
+              const isWarn = log.severity === 'WARN';
+
+              return (
+                <div key={log.id} className="border-b border-slate-900/40 pb-2.5 last:border-0 last:pb-0 text-left">
+                  <div className="flex justify-between items-center gap-2">
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      <span className={`w-1 h-1 rounded-full ${isSevere ? 'bg-red-500 animate-ping' : isWarn ? 'bg-orange-500' : 'bg-slate-500'}`} />
+                      <span className="text-slate-500 text-[8px]">{dateStr}</span>
+                      <span className="text-slate-400 font-bold text-[8px] tracking-wider uppercase bg-slate-900 px-1.5 py-0.5 rounded border border-slate-900">
+                        {log.category}
+                      </span>
+                    </div>
+                    <span className={`font-black text-[8px] tracking-wider px-1.5 py-0.5 rounded-full ${isSevere ? 'bg-red-950/20 border-red-500/20 text-red-400' : isWarn ? 'bg-orange-950/20 border-orange-500/20 text-orange-400' : 'bg-slate-900 text-slate-500'}`}>
+                      {log.severity}
+                    </span>
+                  </div>
+                  <p className="text-slate-200 font-bold mt-1 leading-normal">{log.message}</p>
+                  {log.details && (
+                    <p className="text-slate-500 text-[9px] mt-1 leading-normal bg-slate-950/40 p-1.5 rounded-lg border border-slate-900/30">
+                      {log.details}
+                    </p>
+                  )}
+                </div>
+              );
+            })
+          )}
+        </div>
+      </div>
+      )}
+
+      {/* POPIA Privacy, Data Deletion & Emergency Disclaimer */}
+      {showBlock('SECURITY', 'popia privacy legal terms data deletion emergency disclaimer 10111 112') && (
+      <div className="border-t border-slate-900 pt-4 mt-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-left relative z-10">
+        <div>
+          <h4 className="text-[9px] font-bold text-slate-300 font-mono uppercase tracking-widest">
+            POPIA Privacy &amp; Emergency Terms
+          </h4>
+          <p className="text-[9px] text-slate-500 mt-0.5">
+            SafetyLink does not replace 10111, 112, or 10177. View data handling and deletion rights.
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={() => setShowPopiaModal(true)}
+          className="px-3.5 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-800 text-emerald-400 font-mono font-bold text-[9px] uppercase tracking-wider cursor-pointer shrink-0"
+        >
+          View Privacy &amp; Terms
+        </button>
+      </div>
+      )}
+      <PopiaLegalModal open={showPopiaModal} onClose={() => setShowPopiaModal(false)} />
+    </motion.div>
+  );
+};

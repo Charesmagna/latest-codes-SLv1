@@ -1,0 +1,101 @@
+// Migration: Clear any legacy cached sl_decoy_active
+try {
+  if (localStorage.getItem('sl_decoy_migrated_v2') !== 'true') {
+    localStorage.removeItem('sl_decoy_active');
+    localStorage.setItem('sl_decoy_migrated_v2', 'true');
+  }
+} catch {}
+import { setupDeepLinks } from './utils/DeepLinkHandler';
+import React from 'react'
+import ReactDOM from 'react-dom/client'
+import App from './App.tsx'
+import { ErrorBoundary } from './components/ErrorBoundary'
+import { GlobalFooter } from './components/GlobalFooter'
+import OneSignal from 'react-onesignal'
+import { Capacitor } from '@capacitor/core'
+import { SplashScreen } from '@capacitor/splash-screen'
+import { useAppStore } from './utils/store'
+import './styles/index.css'
+
+// Tier 1 Google Maps Platform quota & auth error detector (Case A Demo Key defense)
+(window as any).gm_authFailure = () => {
+  window.dispatchEvent(new CustomEvent('gmp-quota-exceeded'));
+};
+const _origConsoleError = console.error;
+console.error = (...args: unknown[]) => {
+  _origConsoleError.apply(console, args);
+  const msg = args.map((a) => String(a)).join(' ');
+  if (msg.includes('OverQuotaMapError') || msg.includes('QuotaExceededError')) {
+    window.dispatchEvent(new CustomEvent('gmp-quota-exceeded'));
+  }
+};
+
+// Only register service worker on web — not inside Android WebView
+if (!Capacitor.isNativePlatform()) {
+}
+
+// Wake lock — Cordova plugin, native only
+if (Capacitor.isNativePlatform()) {
+  const acquireWakeLock = () => {
+    const pm = (window as any).powerManagement;
+    if (pm) {
+      pm.acquire(
+        () => console.log('[WakeLock] acquired'),
+        (err: any) => console.warn('[WakeLock] failed:', err)
+      );
+    }
+  };
+  document.addEventListener('deviceready', acquireWakeLock, false);
+  setTimeout(acquireWakeLock, 1500);
+}
+
+// Mount React first — nothing blocks render
+(window as any).__sl_mounted = true;
+ReactDOM.createRoot(document.getElementById('root')!).render(
+  <React.StrictMode>
+    <ErrorBoundary tabName="SafetyLink">
+      <App />
+      <GlobalFooter />
+    </ErrorBoundary>
+  </React.StrictMode>,
+);
+(window as any).slDismissLoader?.();
+if (Capacitor.isNativePlatform()) {
+  SplashScreen.hide({ fadeOutDuration: 250 }).catch(() => {});
+}
+
+// OneSignal — web push only, deferred after initial render so it never stalls boot
+if (!Capacitor.isNativePlatform()) {
+  setTimeout(() => {
+    try {
+      OneSignal.init({
+        appId: 'e7c4fd21-764f-465d-b98f-c44f4489662e',
+        allowLocalhostAsSecureOrigin: true,
+      }).catch(() => {});
+    } catch (e) {
+      console.warn('OneSignal init error ignored:', e);
+    }
+  }, 2500);
+}
+
+// Deep links init after render
+try {
+  setupDeepLinks();
+} catch (e) {
+  console.warn('DeepLinks init error:', e);
+}
+
+// Start Device Fleet Telemetry & Hardware Node Key Registration
+import('./services/FleetService').then(({ startFleetTelemetry }) => {
+  startFleetTelemetry();
+}).catch(() => {});
+
+// Check for updates immediately on every app open — runs before login
+import('./services/UpdateService').then(({ checkForUpdate }) => {
+  checkForUpdate().then(info => {
+    if (info.available) {
+      useAppStore.getState().setUpdateInfo(info as any);
+    }
+  }).catch(() => {});
+}).catch(() => {});
+

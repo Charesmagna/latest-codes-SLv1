@@ -1,0 +1,38 @@
+#!/bin/bash
+# Run this once to set all Cloudflare Worker secrets
+# wrangler must be installed and logged in
+
+cd workers
+
+echo "Setting SafetyLink Worker secrets..."
+
+echo "REDACTED_STRIPE_KEY" | wrangler secret put PAYSTACK_SECRET_KEY
+echo "+27816738186" | wrangler secret put RESPONSE_CENTRE_NUMBER
+echo "true" | wrangler secret put ALERTS_ENABLED
+echo "africastalking" | wrangler secret put USSD_PROVIDER
+echo "atsk_REDACTEDREDACTED33c9573b" | wrangler secret put USSD_API_KEY
+
+# New secrets for extra routes (PCM Forwarder, Supabase partner/crime data):
+# wrangler secret put PCM_WEBHOOK_TOKEN
+# wrangler secret put SUPABASE_URL
+# wrangler secret put SUPABASE_SERVICE_KEY
+
+# Cloudflare Worker Secrets for VAPI Outbound Emergency Voice Alerts:
+# Run these in your terminal where wrangler is authenticated:
+# wrangler secret put VAPI_PRIVATE_KEY
+# wrangler secret put VAPI_PHONE_NUMBER_ID
+# wrangler secret put INTERNAL_API_SECRET
+# wrangler secret put TEST_DESTINATION_NUMBER
+
+# Other platform integrations:
+# wrangler secret put TWILIO_SID
+# wrangler secret put TWILIO_NUMBER
+# wrangler secret put WHATSAPP_ACCESS_TOKEN
+# wrangler secret put BLAND_API_KEY
+# wrangler secret put BLAND_VOICE_ID
+# wrangler secret put TELEGRAM_BOT
+# wrangler secret put TELEGRAM_CHAT
+# wrangler secret put UPSTASH_REDIS_REST_URL
+# wrangler secret put UPSTASH_REDIS_REST_TOKEN
+
+echo "Done. Deploy with: cd workers && wrangler deploy"

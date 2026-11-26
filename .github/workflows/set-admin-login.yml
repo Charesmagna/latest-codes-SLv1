@@ -1,0 +1,33 @@
+name: Set superadmin login on the server (one-time)
+on:
+  push:
+    branches: [v2]
+    paths: ['.github/workflows/set-admin-login.yml']
+  workflow_dispatch:
+
+jobs:
+  set:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Build the password hash and save it on the server
+        env:
+          ADMIN_PASSWORD: ${{ secrets.ADMIN_PASSWORD }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_WORKERS_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: d089bef8b0b58c5d9506b512ec2f63dc
+        run: |
+          if [ -z "$ADMIN_PASSWORD" ]; then echo "::error::ADMIN_PASSWORD is empty"; exit 1; fi
+          echo "::notice::step 1: password received"
+          python3 .github/scripts/make_hash.py || { echo "::error::hash step failed"; exit 1; }
+          echo "::notice::step 2: hash built"
+          npm install -g wrangler@4 >/dev/null 2>&1 || { echo "::error::wrangler install failed"; exit 1; }
+          echo "::notice::step 3: wrangler ready"
+          wrangler secret put ADMIN_PASSWORD_HASH --name safetylink-api < hash.txt || { echo "::error::saving hash failed"; exit 1; }
+          echo "::notice::step 4: hash saved"
+          printf 'info@safetylink.online' | wrangler secret put ADMIN_EMAIL --name safetylink-api || { echo "::error::saving email failed"; exit 1; }
+          echo "::notice::step 5: email saved"
+          wrangler secret put ADMIN_SESSION_SECRET --name safetylink-api < session.txt || { echo "::error::saving session secret failed"; exit 1; }
+          echo "::notice::step 6: done. Superadmin login saved (email info@safetylink.online)"

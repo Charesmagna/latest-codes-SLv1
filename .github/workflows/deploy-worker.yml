@@ -1,0 +1,116 @@
+name: Deploy Cloudflare Worker
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'worker/**'
+      - 'src/utils/crimeHotspots.ts'
+      - '.github/workflows/deploy-worker.yml'
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install wrangler
+        run: npm install -g wrangler@4
+      - name: Install worker dependencies
+        run: cd worker && npm install
+      - name: Safety checks (block risky changes before deploy)
+        run: |
+          set -e
+          echo "Checking for destructive database changes..."
+          if grep -rniE "DROP (TABLE|COLUMN|DATABASE)|TRUNCATE " worker/src | grep -v "^.*//" ; then
+            echo "::error::Destructive SQL found in worker code. Deploy blocked."; exit 1
+          fi
+          echo "Checking that customer-facing routes still exist..."
+          for R in "/api/login" "/api/register" "/api/auth/register-user" "/api/profile/sync" "/api/device/token" "/api/admin/login" "/api/app/latest" "/api/app/versions" "/download/safetylink.apk" "/webhook/pcm" "/api/init-db"; do
+            if ! grep -q "'$R'" worker/src/index.ts && ! grep -q "\"$R\"" worker/src/index.ts; then
+              echo "::error::Required route missing: $R. Deploy blocked so old app versions keep working."; exit 1
+            fi
+          done
+          echo "All safety checks passed."
+
+      - name: Back up the database to storage before deploying
+        env:
+          CF: ${{ secrets.CF_WORKERS_TOKEN }}
+          ACC: d089bef8b0b58c5d9506b512ec2f63dc
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_WORKERS_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: d089bef8b0b58c5d9506b512ec2f63dc
+        working-directory: worker
+        run: |
+          npx wrangler d1 export safetylink-core --remote --output=backup.sql > export.log 2>&1 || { echo "::notice::EXPORT ERR: $(tr -d '\n' < export.log | cut -c1-300)"; exit 1; }
+          KEY="backups/safetylink-core-$(date -u +%Y%m%d-%H%M%S).sql"
+          curl -sS -f -X PUT -H "Authorization: Bearer $CF" -H "Content-Type: application/sql" \
+            --data-binary @backup.sql \
+            "https://api.cloudflare.com/client/v4/accounts/$ACC/r2/buckets/safetylink-releases/objects/$(echo $KEY | sed 's|/|%2F|g')"
+          echo "Backup saved: $KEY"
+
+      - name: Deploy Worker
+        run: cd worker && npx wrangler deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_WORKERS_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: d089bef8b0b58c5d9506b512ec2f63dc
+      - name: Set Worker Secrets (only those defined in GitHub Secrets)
+        run: |
+          cd worker
+          for NAME in JWT_SECRET INTERNAL_API_SECRET TWILIO_SID TWILIO_AUTH_TOKEN TWILIO_NUMBER VAPI_PRIVATE_KEY VAPI_PHONE_NUMBER_ID VAPI_ASSISTANT_ID AT_API_KEY AT_USERNAME BLAND_API_KEY BLAND_ORG_KEY PAYSTACK_SECRET_KEY PAYSTACK_PUBLIC_KEY RESPONSE_CENTRE_NUMBER NEON_DATA_API_URL AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_ENDPOINT_URL_S3 RECAPTCHA_SECRET CLOUDINARY_CLOUD CLOUDINARY_KEY CLOUDINARY_SECRET WHATSAPP_ACCESS_TOKEN WHATSAPP_PHONE_NUMBER_ID TWILIO_WHATSAPP_FROM PCM_WEBHOOK_SECRET PCM_WEBHOOK_TOKEN SYSTEM_API_KEY SMSGATE_USERNAME SMSGATE_PASSWORD SMSGATE_BASE_URL SMSGATE_DEVICE_ID SMSGATE_SIM_NUMBER ADMIN_EMAIL ADMIN_PASSWORD_HASH ADMIN_SESSION_SECRET ADMIN_API_KEY FCM_SERVICE_ACCOUNT WHATSAPP_TEMPLATE_NAME WHATSAPP_TEMPLATE_LANG FREENEWSAPI_KEY BIGDATACLOUD_API_KEY IOT_WEBHOOK_SECRET GEMINI_API_KEY; do
+            VALUE="${!NAME}"
+            if [ -n "$VALUE" ]; then
+              printf '%s' "$VALUE" | npx wrangler secret put "$NAME" --name safetylink-api >/dev/null && echo "set $NAME"
+            else
+              echo "skip $NAME (not in GitHub Secrets)"
+            fi
+          done
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_WORKERS_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: d089bef8b0b58c5d9506b512ec2f63dc
+          JWT_SECRET: ${{ secrets.JWT_SECRET }}
+          INTERNAL_API_SECRET: ${{ secrets.INTERNAL_API_SECRET }}
+          TWILIO_SID: ${{ secrets.TWILIO_SID }}
+          TWILIO_AUTH_TOKEN: ${{ secrets.TWILIO_AUTH_TOKEN }}
+          TWILIO_NUMBER: ${{ secrets.TWILIO_NUMBER }}
+          VAPI_PRIVATE_KEY: ${{ secrets.VAPI_PRIVATE_KEY }}
+          VAPI_PHONE_NUMBER_ID: ${{ secrets.VAPI_PHONE_NUMBER_ID }}
+          VAPI_ASSISTANT_ID: ${{ secrets.VAPI_ASSISTANT_ID }}
+          AT_API_KEY: ${{ secrets.AT_API_KEY }}
+          AT_USERNAME: ${{ secrets.AT_USERNAME }}
+          BLAND_API_KEY: ${{ secrets.BLAND_API_KEY }}
+          BLAND_ORG_KEY: ${{ secrets.BLAND_ORG_KEY }}
+          PAYSTACK_SECRET_KEY: ${{ secrets.PAYSTACK_SECRET_KEY }}
+          PAYSTACK_PUBLIC_KEY: ${{ secrets.PAYSTACK_PUBLIC_KEY }}
+          RESPONSE_CENTRE_NUMBER: ${{ secrets.RESPONSE_CENTRE_NUMBER }}
+          NEON_DATA_API_URL: ${{ secrets.NEON_DATA_API_URL }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_ENDPOINT_URL_S3: ${{ secrets.AWS_ENDPOINT_URL_S3 }}
+          RECAPTCHA_SECRET: ${{ secrets.RECAPTCHA_SECRET }}
+          CLOUDINARY_CLOUD: ${{ secrets.CLOUDINARY_CLOUD }}
+          CLOUDINARY_KEY: ${{ secrets.CLOUDINARY_KEY }}
+          CLOUDINARY_SECRET: ${{ secrets.CLOUDINARY_SECRET }}
+          WHATSAPP_ACCESS_TOKEN: ${{ secrets.WHATSAPP_ACCESS_TOKEN }}
+          WHATSAPP_PHONE_NUMBER_ID: ${{ secrets.WHATSAPP_PHONE_NUMBER_ID }}
+          TWILIO_WHATSAPP_FROM: ${{ secrets.TWILIO_WHATSAPP_FROM }}
+          PCM_WEBHOOK_SECRET: ${{ secrets.PCM_WEBHOOK_SECRET }}
+          WHATSAPP_TEMPLATE_NAME: ${{ secrets.WHATSAPP_TEMPLATE_NAME }}
+          WHATSAPP_TEMPLATE_LANG: ${{ secrets.WHATSAPP_TEMPLATE_LANG }}
+          PCM_WEBHOOK_TOKEN: ${{ secrets.PCM_WEBHOOK_TOKEN }}
+          SYSTEM_API_KEY: ${{ secrets.SYSTEM_API_KEY }}
+          SMSGATE_USERNAME: ${{ secrets.SMSGATE_USERNAME }}
+          SMSGATE_PASSWORD: ${{ secrets.SMSGATE_PASSWORD }}
+          SMSGATE_BASE_URL: ${{ secrets.SMSGATE_BASE_URL }}
+          SMSGATE_DEVICE_ID: ${{ secrets.SMSGATE_DEVICE_ID }}
+          SMSGATE_SIM_NUMBER: ${{ secrets.SMSGATE_SIM_NUMBER }}
+          FCM_SERVICE_ACCOUNT: ${{ secrets.FCM_SERVICE_ACCOUNT }}
+          ADMIN_API_KEY: ${{ secrets.ADMIN_API_KEY }}
+          ADMIN_EMAIL: ${{ secrets.ADMIN_EMAIL }}
+          ADMIN_PASSWORD_HASH: ${{ secrets.ADMIN_PASSWORD_HASH }}
+          ADMIN_SESSION_SECRET: ${{ secrets.ADMIN_SESSION_SECRET }}
+          FREENEWSAPI_KEY: ${{ secrets.FREENEWSAPI_KEY }}
+          BIGDATACLOUD_API_KEY: ${{ secrets.BIGDATACLOUD_API_KEY }}
+          IOT_WEBHOOK_SECRET: ${{ secrets.IOT_WEBHOOK_SECRET }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}

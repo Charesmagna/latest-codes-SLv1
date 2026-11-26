@@ -1,0 +1,280 @@
+import React, { useState, useEffect } from 'react';
+import { motion, AnimatePresence } from 'motion/react';
+import { useAppStore } from '../utils/store';
+import { SafetyLinkLogo } from './SafetyLinkLogo';
+
+export const AndroidWidgetSimulator: React.FC = () => {
+  const { 
+    triggerPanic, 
+    addAuditLog, 
+    activeSOSState, 
+    userLocation,
+    silenceAlerts,
+    setSilenceAlerts,
+    decoyActive,
+    setDecoyActive,
+    addToast
+  } = useAppStore();
+  
+  const userLat = userLocation?.lat ?? -26.1912;
+  const userLng = userLocation?.lng ?? 28.0264;
+  const coordString = `[${userLat.toFixed(5)}, ${userLng.toFixed(5)}]`;
+  
+  // Widget states
+  const [countdown, setCountdown] = useState<number | null>(null);
+  const isArmed = true;
+  const [widgetCircleSize, setWidgetCircleSize] = useState<number>(112); // Adjustable: 72px, 112px, 150px, 190px
+
+  // 10-second disarm timer logic
+  useEffect(() => {
+    if (countdown === 0) {
+      setCountdown(null);
+      executeRealPanic();
+      return;
+    }
+
+    if (countdown === null) return;
+
+    const interval = setInterval(() => {
+      setCountdown(prev => (prev !== null ? prev - 1 : null));
+    }, 1000);
+
+    return () => clearInterval(interval);
+  }, [countdown]);
+
+  const executeRealPanic = async () => {
+    addAuditLog('DISPATCH', 'SEVERE', 'Widget 10s grace period expired. Broadcasting SOS!', 'Transmitting cellular telemetry');
+    
+    try {
+      await triggerPanic('Emergency SOS triggered from Capacitor Android Home Widget.');
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const triggerLocalNotification = (title: string, body: string) => {
+    addToast(`${title}: ${body}`, 'info');
+  };
+
+  const handleWidgetTrigger = () => {
+    // Play haptic vibration sequence
+    if (navigator.vibrate) {
+      navigator.vibrate([80, 40, 80]);
+    }
+
+    if (!isArmed) {
+      triggerLocalNotification('Widget Error', 'SafetyLink widget is disarmed. Please open main console to authenticate.');
+      return;
+    }
+    if (activeSOSState !== 'IDLE') {
+      triggerLocalNotification('Broadcast Status', 'An active emergency beacon is already transmitting.');
+      return;
+    }
+    
+    // Start 10 seconds disarm countdown
+    setCountdown(10);
+    addAuditLog('SYSTEM', 'WARN', 'SOS triggered from Home Screen Widget', '10-second disarm grace period started');
+    
+    // Fire immediate Capacitor notification warning
+    triggerLocalNotification(
+      'SafetyLink Widget Triggered',
+      'EMERGENCY SOS enqueued! You have 10 seconds to disarm.'
+    );
+  };
+
+  const handleDisarmGrace = () => {
+    // Play quick tap haptic vibration
+    if (navigator.vibrate) {
+      navigator.vibrate(20);
+    }
+    setCountdown(null);
+    addAuditLog('BLE', 'INFO', 'Widget SOS disarmed by user during 10s grace period', 'Coordinated broadcast enqueuer stopped.');
+    triggerLocalNotification('SOS Aborted', 'Emergency broadcast sequence successfully disarmed.');
+  };
+
+  return (
+    <div className="bg-slate-900/40 border border-slate-900 rounded-3xl p-5 text-left space-y-4 shadow relative overflow-hidden">
+
+      {/* 10-second Urgent Disarm Overlay */}
+      <AnimatePresence>
+        {countdown !== null && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-slate-950/98 z-[999999] flex flex-col items-center justify-center p-6 text-center select-none"
+          >
+            {/* Pulsing hazard glow backing */}
+            <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(239,68,68,0.15)_0%,transparent_70%)] animate-pulse" />
+
+            <div className="max-w-md w-full space-y-8 z-10">
+              <div className="space-y-2">
+                <span className="inline-block text-[10px] font-black font-mono bg-red-950/40 border border-red-500/20 text-red-400 px-3 py-1 rounded-full uppercase tracking-wider animate-pulse">
+                  ⚠️ CAPACITOR LAUNCHER SOS WARNING ⚠️
+                </span>
+                <h3 className="text-xl font-black font-mono uppercase tracking-wide text-slate-100">
+                  Transmitting GPS Coordinates in
+                </h3>
+              </div>
+
+              {/* Huge pulsating countdown timer */}
+              <div className="relative w-48 h-48 mx-auto flex items-center justify-center">
+                <motion.div
+                  animate={{ scale: [0.95, 1.05, 0.95] }}
+                  transition={{ duration: 1, repeat: Infinity }}
+                  className="absolute inset-0 rounded-full border-4 border-dashed border-red-500/25"
+                />
+                <div className="w-40 h-40 rounded-full bg-slate-900 border border-red-500/40 flex items-center justify-center shadow-[0_0_50px_rgba(239,68,68,0.25)] relative">
+                  <span className="text-6xl font-black font-mono text-red-500 tracking-tighter">
+                    {countdown}s
+                  </span>
+                </div>
+              </div>
+
+              <div className="space-y-4">
+                <p className="text-xs text-slate-400 leading-relaxed px-6 font-mono">
+                  Distress payload ready. Transmitting location <span className="text-amber-400 font-bold">{coordString}</span> to student housing responders, and emergency call sequencers.
+                </p>
+
+                <button
+                  onClick={handleDisarmGrace}
+                  className="w-full max-w-xs py-4 bg-emerald-600 hover:bg-emerald-500 text-white font-mono font-black text-xs rounded-2xl uppercase tracking-wider shadow-lg shadow-emerald-900/30 border border-emerald-500/20 hover:scale-102 transition-all"
+                >
+                  🛑 DISARM SOS (CANCEL BROADCAST)
+                </button>
+                
+                <span className="block text-[9px] font-mono text-slate-500 uppercase tracking-widest">
+                  Any interaction or pressing disarm stops escalation
+                </span>
+              </div>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Authentic Home Screen Widget Header */}
+      <div className="flex justify-between items-center border-b border-slate-900 pb-3">
+        <div className="flex items-center gap-2">
+          <SafetyLinkLogo size={18} glowColor="rgba(239, 68, 68, 0.4)" />
+          <h2 className="text-xs font-black tracking-widest font-mono uppercase text-slate-100">
+            SafetyLink AppWidget System
+          </h2>
+        </div>
+        <div className="flex gap-1.5">
+          <span className="text-[8.5px] font-mono font-black px-2 py-0.5 bg-cyan-500/10 border border-cyan-500/20 text-cyan-400 rounded uppercase">
+            Ghost Service
+          </span>
+          <span className="text-[8.5px] font-mono font-black px-2 py-0.5 bg-red-500/10 border border-red-500/20 text-red-400 rounded uppercase">
+            Decoupled
+          </span>
+        </div>
+      </div>
+
+      <div className="text-[9.5px] text-slate-400 leading-relaxed font-mono bg-slate-950/40 p-3 rounded-xl border border-slate-900/60">
+        <p className="text-cyan-400 font-bold mb-1">🛠️ NATIVE ANDROID SUBSYSTEM CONNECTED:</p>
+        <p className="mb-1">
+          • <span className="text-slate-200">PanicService.java</span> operates as a headless, native daemon process running independently of the WebView context.
+        </p>
+        <p className="mb-1">
+          • Two <span className="text-slate-200">AppWidgetProvider</span> classes expose the <span className="text-red-400 font-bold">Instant SOS Actuator</span> and the <span className="text-emerald-400 font-bold">System Status HUD</span> widgets.
+        </p>
+        <p>
+          • Hardware iTAG presses send a system Intent directly to the background service, displaying a global overlay countdown over lockscreens.
+        </p>
+      </div>
+
+      {/* The Widget Body, rendered directly as a clean high-contrast card */}
+      <div className="flex flex-col items-center justify-center py-4 space-y-4 relative">
+        {/* Adjustable Size Selector Bar */}
+        <div className="flex items-center gap-2 bg-slate-950/80 px-3 py-1.5 rounded-full border border-slate-800 text-[8.5px] font-mono">
+          <span className="text-slate-400 font-bold uppercase">WIDGET SIZE:</span>
+          {[
+            { label: '1x1 (72px)', size: 72 },
+            { label: '2x2 (112px)', size: 112 },
+            { label: '3x3 (150px)', size: 150 },
+            { label: '4x4 (180px)', size: 180 },
+          ].map(opt => (
+            <button
+              key={opt.size}
+              onClick={() => {
+                setWidgetCircleSize(opt.size);
+                if (navigator.vibrate) navigator.vibrate(15);
+              }}
+              className={`px-2 py-0.5 rounded-full font-bold transition-all ${
+                widgetCircleSize === opt.size
+                  ? 'bg-red-600 text-white shadow-sm'
+                  : 'text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              {opt.label}
+            </button>
+          ))}
+        </div>
+
+        {/* High contrast SOS widget button with adjustable red circle diameter */}
+        <motion.button
+          onClick={handleWidgetTrigger}
+          whileHover={{ scale: 1.05 }}
+          whileTap={{ scale: 0.95 }}
+          style={{ width: `${widgetCircleSize}px`, height: `${widgetCircleSize}px` }}
+          className="relative rounded-full bg-gradient-to-b from-red-600 via-red-700 to-red-900 border-4 border-slate-950 shadow-[0_10px_35px_rgba(220,38,38,0.5)] flex items-center justify-center flex-col gap-1 cursor-pointer group hover:brightness-110 transition-all active:scale-95"
+        >
+          {/* Glowing pulse rings */}
+          {isArmed && (
+            <span className="absolute inset-0 rounded-full border-2 border-red-500/40 animate-ping pointer-events-none" />
+          )}
+          <span className={`font-black font-mono text-white tracking-wider ${widgetCircleSize <= 72 ? 'text-lg' : widgetCircleSize <= 112 ? 'text-2xl' : 'text-3xl'}`}>
+            SOS
+          </span>
+          <span className={`font-mono font-black text-red-200 uppercase tracking-widest ${widgetCircleSize <= 72 ? 'text-[5px]' : 'text-[7px]'}`}>
+            TAP TO DISPATCH
+          </span>
+        </motion.button>
+
+        <div className="text-center space-y-2.5 font-mono w-full">
+          <div>
+            <span className="text-[9.5px] font-black text-slate-300 uppercase">Interactive Widget Gateway</span>
+            <p className="text-[8px] text-slate-500 uppercase leading-relaxed max-w-xs mx-auto">
+              Uplink: Active • Delay: 10s Grace Period
+            </p>
+          </div>
+
+          {/* Quick interactive toggles */}
+          <div className="flex justify-center items-center gap-3 pt-2 border-t border-slate-900/40 max-w-[240px] mx-auto">
+            <button
+              onClick={() => {
+                setSilenceAlerts(!silenceAlerts);
+                addToast(silenceAlerts ? 'Siren mode armed.' : 'Silence SOS mode armed.', 'info');
+                if (navigator.vibrate) navigator.vibrate(15);
+              }}
+              className={`flex-1 py-1 px-2 rounded-xl text-[8px] font-bold border transition-all uppercase flex items-center justify-center gap-1 ${
+                silenceAlerts
+                  ? 'bg-amber-500/10 border-amber-500/30 text-amber-400'
+                  : 'bg-slate-950/60 border-slate-900 text-slate-500 hover:text-slate-300'
+              }`}
+            >
+              <span>🔕</span>
+              <span>{silenceAlerts ? 'Silent' : 'Siren'}</span>
+            </button>
+
+            <button
+              onClick={() => {
+                setDecoyActive(!decoyActive);
+                addToast(decoyActive ? 'Calculator disguise disarmed.' : 'Calculator disguise armed.', 'info');
+                if (navigator.vibrate) navigator.vibrate(15);
+              }}
+              className={`flex-1 py-1 px-2 rounded-xl text-[8px] font-bold border transition-all uppercase flex items-center justify-center gap-1 ${
+                decoyActive
+                  ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400'
+                  : 'bg-slate-950/60 border-slate-900 text-slate-500 hover:text-slate-300'
+              }`}
+            >
+              <span>🎛️</span>
+              <span>{decoyActive ? 'Decoy' : 'Disarm'}</span>
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
